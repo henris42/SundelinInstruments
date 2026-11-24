@@ -177,8 +177,9 @@ does nothing. It works in Normal and MPE mode.
 Turned up, it does three things:
 
 - **Every note starts slightly off pitch.**
-- **Things drift.** The tuning of the oscillators and the two filter cutoffs wander
-  slowly around the values of the sound. So do a few parameters that suit each
+- **Things drift.** With each note you play, one thing moves a little: the tuning
+  of the oscillators and the two filter cutoffs wander around the values of the
+  sound. So do a few parameters that suit each
   oscillator's type: the lip and breath noise of a brass model, where a plucked
   string is plucked and how it is damped, the rosin and bow position of a bowed
   string, the drawbar tuning of an organ, and so on.

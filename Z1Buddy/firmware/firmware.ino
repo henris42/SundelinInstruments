@@ -1219,8 +1219,7 @@ static void bgTick(uint32_t now, bool turn) {
 // ---- Wonkiness (pot A6): see the block further down ----
 static constexpr int WONK_PITCH_MAX = 50;    // Random Pitch Intensity at full pot (Z1 range 0-99)
 static constexpr int WONK_DETUNE_MAX = 12;   // offset of each timbre at full pot, cents (MPE mode)
-static constexpr int WONK_IDLE_MS = 4000;    // after the last note, the drift goes on this long
-static constexpr int WONK_STEP_MS = 300;     // how often the drift moves one parameter
+static constexpr int WONK_STEP_MS = 300;     // the drift moves at most this often, however fast the notes come
 static int wonkAmount = 0;                 // 0..99 from the pot
 static float wonkVoice[MPE_TIMBRES];       // fixed offset of each timbre, -1..1
 
@@ -1369,7 +1368,7 @@ static void mpeDetunePot(int pot) {
 //   Per voice:  in MPE mode each timbre has a fixed offset of its own (Multi
 //               Detune, added to the unison spread in mpeSendDetune()).
 //   Drift:      a list of program parameters wanders slowly around the values
-//               of the patch. Always the fine tune of the oscillators and the
+//               of the patch, one of them moving a step with each note played. Always the fine tune of the oscillators and the
 //               two filter cutoffs; the rest depends on the oscillator type
 //               (WONK_BY_TYPE below), so a brass model drifts in its lip and
 //               breath noise, a plucked string in where it is plucked, etc.
@@ -1406,7 +1405,6 @@ static constexpr WonkSpec WONK_BY_TYPE[13][WONK_PER_TYPE] = {
 };
 
 static constexpr int WONK_MAX_TARGETS = (5 + 2 * WONK_PER_TYPE);
-static constexpr int WONK_PER_STEP = 1;      // parameters moved per step: the Z1's processor is slow, every message costs it time
 
 static constexpr int WONK_UNSENT = -10000;
 
@@ -1415,7 +1413,7 @@ static int wonkCount = 0;
 static int wonkNext = 0;                       // round robin
 static int wonkBuiltFor[2] = { -1, -1 };       // oscillator types the list was built for
 static int wonkSentPitch = -1;
-static uint32_t wonkNextAt = 0;
+static uint32_t wonkLastStepAt = 0;
 static bool wonkSeeded = false;
 // While this is set nothing is sent. The drift needs the patch's own values,
 // and after a program change the editor does not have them until a dump has
@@ -1529,26 +1527,27 @@ static void wonkPause(bool restore, bool askLater) {
   wonkAskAt = askLater ? millis() + 400 : 0;
 }
 
-// Called from loop().
+// Called from loop(): only looks after the wait for a program dump.
 static void wonkTick(uint32_t now) {
-  if (wonkHold) {
-    if (wonkAskAt && now >= wonkAskAt) {
-      wonkAskAt = 0;
-      Z1Edit::getInstance()->getCurrPatch();
-    }
-    return;
+  if (wonkHold && wonkAskAt && now >= wonkAskAt) {
+    wonkAskAt = 0;
+    Z1Edit::getInstance()->getCurrPatch();
   }
-  if (wonkAmount == 0 || now < wonkNextAt) return;
-  wonkNextAt = now + WONK_STEP_MS;
-  // Nothing drifts while nothing sounds: with no note on and none for a few
-  // seconds (the releases have died away) the Z1 is left in peace.
-  if (notesSounding == 0 && now - lastNoteEventAt > WONK_IDLE_MS) return;
+}
+
+// Called for every note-on from the computer: the drift moves one parameter
+// per note played, and not more often than every WONK_STEP_MS. So the sound
+// is a little different from note to note, the Z1 gets one extra message per
+// note at most, and nothing at all while nobody plays.
+static void wonkNote(uint32_t now) {
+  if (wonkAmount == 0 || wonkHold || wonkCount < 0) return;
+  if (now - wonkLastStepAt < (uint32_t)WONK_STEP_MS) return;
+  wonkLastStepAt = now;
   // An oscillator type was changed in the editor: other parameters matter now.
   if (wonkOscType(0) != wonkBuiltFor[0] || wonkOscType(1) != wonkBuiltFor[1]) wonkBuild();
-  for (int n = 0; n < WONK_PER_STEP && wonkCount > 0; ++n) {
-    wonkMove(wonkTargets[wonkNext]);
-    wonkNext = (wonkNext + 1) % wonkCount;
-  }
+  if (wonkCount == 0) return;
+  wonkMove(wonkTargets[wonkNext]);
+  wonkNext = (wonkNext + 1) % wonkCount;
 }
 
 // A program dump arrived: the editor has the patch's own values again, so
@@ -2101,7 +2100,10 @@ void processUSB() {
     uint8_t ch = usbMIDI.getChannel();  // 1..16
     uint8_t d1 = usbMIDI.getData1();
     uint8_t d2 = usbMIDI.getData2();
-    if (type == usbMIDI.NoteOn) noteCount(noteIn, (uint8_t)(0x90 | ((ch - 1) & 0x0F)), d1, d2);
+    if (type == usbMIDI.NoteOn) {
+      noteCount(noteIn, (uint8_t)(0x90 | ((ch - 1) & 0x0F)), d1, d2);
+      if (d2 > 0) wonkNote(millis());
+    }
     else if (type == usbMIDI.NoteOff) noteCount(noteIn, (uint8_t)(0x80 | ((ch - 1) & 0x0F)), d1, 0);
     if (z->getMainState() == mainState::NORMAL) {
       ch = 1;

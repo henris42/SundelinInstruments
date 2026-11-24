@@ -27,7 +27,10 @@ static void txEvent3(uint8_t a, uint8_t b, uint8_t c) { Serial1.write(a); Serial
 static int fails = 0;
 static void check(const char* label, bool ok) { bgFlush(); if (!ok) fails++; printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", label, ok ? "" : "\n   got  ", ok ? "" : out.c_str()); out.clear(); }
 static void E(int k, int v) { editables[k] = new EditableValue{v}; }
-static void run(int steps) { for (int i = 0; i < steps; i++) { now_ms += 150; wonkTick(now_ms); bgFlush(); } }
+// one note every 150 ms
+static void run(int steps) { for (int i = 0; i < steps; i++) { now_ms += 150; wonkNote(now_ms); wonkTick(now_ms); bgFlush(); } }
+// time passing with nobody playing
+static void idle(int steps) { for (int i = 0; i < steps; i++) { now_ms += 150; wonkTick(now_ms); bgFlush(); } }
 int main() {
   srand(3);
   E(174, 9); E(188, 0); E(177, 0); E(191, 5); E(204, 0); E(263, 60); E(290, 40);
@@ -54,11 +57,11 @@ int main() {
   wonkProgramLoaded(); run(100); out.clear(); wonkPot(0); bgFlush(); back = true; for (int i = 0; i < wonkCount; i++) if (wonkTargets[i].sent != WONK_UNSENT) back = false;
   check("pot to 0: all back at the patch values", back && out.find("p30=0") != std::string::npos);
   run(50); check("and stays quiet", out.empty());
-  // nothing drifts while nothing sounds
-  wonkPot(99); wonkProgramLoaded(); run(20); out.clear(); notesSounding = 0; lastNoteEventAt = now_ms; run(20);
-  check("drift goes on for a few seconds after the last note", !out.empty());
-  run(40); out.clear(); run(200);
-  check("then stops while nothing sounds", out.empty());
-  notesSounding = 1; run(20);
-  check("and starts again with the next note", !out.empty());
+  // one step per note, and nothing while nobody plays
+  wonkPot(99); wonkProgramLoaded(); run(20); out.clear();
+  idle(400); check("nothing is sent while no note is played", out.empty());
+  int before = 0; for (auto& kv : nsent) before += kv.second;
+  for (int i = 0; i < 50; i++) { now_ms += 20; wonkNote(now_ms); } bgFlush(); int after = 0; for (auto& kv : nsent) after += kv.second;
+  printf("     50 notes in one second: %d parameter changes\n", after - before); out.clear();
+  check("fast playing does not send more than about 3 a second", after - before <= 4);
   printf(fails ? "%d FAILED\n" : "all passed\n", fails); return fails; }

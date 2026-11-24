@@ -702,7 +702,7 @@ There are three layers:
 | --- | --- | --- |
 | Per note | Each note starts slightly off pitch | Program parameter 30, Random Pitch Intensity; the Z1 does the scattering |
 | Per voice (MPE mode) | Each of the six timbres is permanently a little off, by its own amount | Multi Detune of each timbre, added to the unison spread; up to ±12 cents |
-| Drift | A set of parameters wanders slowly around the patch's values | Program parameter changes, one parameter every 0.3 s, only while notes sound |
+| Drift | A set of parameters wanders slowly around the patch's values | One program parameter change per note played, at most one every 0.3 s |
 
 ### What drifts
 
@@ -747,12 +747,12 @@ defined in the firmware.
   scales how far it may go.
 - The centre is the patch's own value, taken from the editor. Edit a parameter on
   the Buddy or on the Z1 and the drift follows the new value.
-- One parameter is moved every 0.3 s, in turn, and only when the rounded value
-  changes: two or three messages a second, under 1 % of the DIN link. The Z1's
-  processor is slow and its panel gets sluggish under a stream of parameter
-  changes, so the drift is kept this sparse on purpose.
-- **Nothing drifts while nothing sounds.** With no note on, and none for 4
-  seconds, the Buddy sends the Z1 nothing.
+- **One parameter moves with each note played** (`wonkNote()`), in turn, never
+  more often than every 0.3 s, and a message goes out only when the rounded
+  value changes. So the Z1 gets at most one extra message per note, and nothing
+  at all while nobody plays. The Z1's processor is slow and its panel gets
+  sluggish under a stream of parameter changes; an earlier version that drifted
+  on a timer sent it 20 a second.
 - If an oscillator type is changed in the editor, the list is rebuilt for the new
   type.
 
