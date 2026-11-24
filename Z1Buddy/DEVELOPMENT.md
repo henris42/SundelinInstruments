@@ -54,6 +54,7 @@ tools/buddy go         # flash, then monitor
 tools/buddy port       # show which connected Teensy is the Z1 Buddy
 tools/buddy status     # ask the running Buddy for its debug status
 tools/buddy panic      # all notes off
+tools/buddy bendrange 48   # MPE mode: what the controller means by a full key bend
 tools/buddy bend 60    # MPE mode: key bend depth, percent of true pitch
 ```
 

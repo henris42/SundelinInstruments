@@ -10,6 +10,10 @@
 #   tools/buddy status     ask the running Buddy for its debug status: queues,
 #                          longest waits, counters, and which notes are on
 #   tools/buddy panic      silence: all notes off
+#   tools/buddy bendrange S [C]
+#                          MPE mode: tell the Buddy what the controller means
+#                          by a full bend of a key, S semitones and C cents
+#                          (the Osmose does not announce it; standard is 48)
 #   tools/buddy bend N     MPE mode: how much a key's sideways bend does, in
 #                          percent of true pitch (100 = a semitone of bend is
 #                          a semitone); until the Buddy is switched off
@@ -127,6 +131,15 @@ case "$1" in
     printf '\360\175\132\061\006\367' > "$OUT/panic.syx"
     "$ROOT/tools/z1send" "$MIDI_PORT" "$OUT/panic.syx" > /dev/null && echo "all notes off sent"
     ;;
+  bendrange)
+    case "$2" in ''|*[!0-9]*) die "usage: tools/buddy bendrange <semitones 1-96> [cents 0-99]" ;; esac
+    cents="${3:-0}"
+    case "$cents" in *[!0-9]*) die "cents must be 0-99" ;; esac
+    [ "$2" -ge 1 ] && [ "$2" -le 96 ] && [ "$cents" -le 99 ] || die "semitones 1-96, cents 0-99"
+    midi_tool z1send
+    python3 -c "import sys; open(sys.argv[1], 'wb').write(bytes([0xF0, 0x7D, 0x5A, 0x31, 0x08, int(sys.argv[2]), int(sys.argv[3]), 0xF7]))" "$OUT/bendrange.syx" "$2" "$cents"
+    "$ROOT/tools/z1send" "$MIDI_PORT" "$OUT/bendrange.syx" > /dev/null && echo "the Buddy now takes a full key bend as $2 semitones $cents cents"
+    ;;
   bend)
     case "$2" in ''|*[!0-9]*) die "usage: tools/buddy bend <percent 0-127>" ;; esac
     [ "$2" -le 127 ] || die "at most 127"
@@ -143,5 +156,5 @@ case "$1" in
     [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found"
     echo "Z1 Buddy: upload port $port, debug output $SERIAL_DEV"
     ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

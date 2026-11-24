@@ -1591,6 +1591,10 @@ static void potSet(int i, int v) {
 //                         the Z1, then All Notes Off on every channel
 //     07 pp               depth of a key's own bend in MPE mode, percent of true
 //                         pitch, 0-127 (100 = a semitone of bend is a semitone)
+//     08 ss cc            what the controller means by a full bend of a key:
+//                         ss semitones (1-96) and cc cents (0-99). The same as
+//                         RPN 0 on a note channel, for a controller that does
+//                         not announce its range itself. 48 00 after power-up.
 //   from the Buddy:
 //     11 mm uu ww bb pp pt dt   status, sent when asked and whenever it changes
 //        mm  0 Normal, 1 entering MPE (waiting for the Z1), 2 MPE
@@ -1752,6 +1756,13 @@ static bool buddyHandle(const uint8_t* data, uint16_t length) {
       break;
     case 0x05: buddySendDebug(); break;
     case 0x06: buddyPanic(); break;
+    case 0x08:
+      if (length >= 7 && data[5] >= 1 && data[5] <= 96) {
+        mpeBendSemitones = data[5];
+        mpeBendCents = (length >= 8 && data[6] <= 99) ? data[6] : 0;
+        Serial.printf("MPE: a full key bend is %d.%02d semitones (set by Buddy message)\r\n", mpeBendSemitones, mpeBendCents);
+      }
+      break;
     case 0x07:
       if (length >= 7) {
         mpeBendPercent = data[5];

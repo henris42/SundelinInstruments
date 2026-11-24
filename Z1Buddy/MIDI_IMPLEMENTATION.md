@@ -135,7 +135,10 @@ that scales the bend itself can pick whatever suits it and announce it:
   whose keys only ever bend a semitone or so.
 
 Without an announcement the Buddy assumes 48, so a standard MPE controller works
-unchanged.
+unchanged. The Osmose does not announce its range; if it is set to something other
+than 48, tell the Buddy with Buddy message `08` (`tools/buddy bendrange`). When
+the Osmose is played through Live, what counts is the range Live uses for its MPE
+output, 48 unless changed.
 
 How finely the Z1 itself follows a pitch bend is not stated in Korg's documents.
 They say only that it sends and receives pitch bend as the full 14 bits, and that
@@ -212,6 +215,7 @@ aside for private use; `5A 31` is "Z1".
 | To the Buddy | `05` | Send the debug status |
 | To the Buddy | `06` | Panic: all notes off |
 | To the Buddy | `07 pp` | Depth of a key's bend in MPE mode, percent of true pitch, 0–127 |
+| To the Buddy | `08 ss cc` | Range of the incoming key bend, `ss` semitones (1–96) and `cc` cents (0–99): the same as RPN 0 on a note channel, for a controller that does not announce its range. 48 00 after power-up. |
 | From the Buddy | `11 mm uu ww bb pp pt dt` | Status; sent when asked for and when it changes |
 | From the Buddy | `12 …` | Debug status |
 
