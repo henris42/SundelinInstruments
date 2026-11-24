@@ -310,6 +310,8 @@ inline constexpr ParamDef Z1_PARAMS[] = {
   {           160, "MSync",     0,    1,   0, editableType::TextEnum, &z1OffOn },
   {           161, "MBase",     0,    7,   0, editableType::Integer,  nullptr },
   {           162, "MTime",     0,   15,   0, editableType::Integer,  nullptr },
+  {           163, "PB+",     -60,   24,   2, editableType::Integer,  nullptr },   // pitch bend range up, semitones
+  {           164, "PB-",     -60,   24,  -2, editableType::Integer,  nullptr },   // pitch bend range down
   {           174, "OSC1",      0,   12,   0, editableType::TextEnum, &z1OscTypes },
   {           175, "Oct",       0,    3,   0, editableType::Integer,  nullptr },
   {           176, "Semi",    -12,   12,   0, editableType::Integer,  nullptr },

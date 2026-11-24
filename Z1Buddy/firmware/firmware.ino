@@ -548,14 +548,38 @@ static inline void markChPress(uint8_t ch, uint8_t val) {
 }
 // Pitch bend.
 // Normal mode: everything is on channel 1 and a bend is simply the bend.
-// MPE mode: a bend on a note channel is that note's own; a bend on channel 1
-// is for all notes and is added to each of them, at once, so the pitch wheel
-// moves every sounding note and not only the ones that bend next.
+// MPE mode: a bend on a note channel is that note's own, scaled to the pitch
+// bend range of the sound (mpeScaleBend). A bend on channel 1 is for all
+// notes: it is added to each of them as it is, at once, so a pitch wheel
+// moves every sounding note by the sound's own range.
 static uint16_t rawPB[16] = { 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192,
                               8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192 };   // each note channel's own bend
 
+// A note's own bend arrives in MPE scale: full travel means 48 semitones.
+// The Z1 plays a bend in the scale of the sound: full travel is its pitch
+// bend range, parameters 163 (up) and 164 (down), usually 2 semitones. So the
+// bend is multiplied by 48 / range; a key bent a semitone then sounds a
+// semitone higher, whatever the range of the sound, and with a small range
+// the bend gets the Z1's full resolution. What does not fit the range is
+// held at its end. A sound whose range is 0 or reversed is left unscaled.
+static constexpr int MPE_BEND_SEMITONES = 48;
+
+static inline int32_t mpeScaleBend(int32_t offset) {   // offset from the centre, -8192..8191
+  int range = 0;
+  if (offset >= 0) {
+    if (editables.count(163)) range = editables[163]->getIval();
+  } else {
+    if (editables.count(164)) range = -editables[164]->getIval();
+  }
+  if (range <= 0) return offset;
+  int32_t scaled = offset * MPE_BEND_SEMITONES / range;
+  if (scaled > 8191) scaled = 8191;
+  if (scaled < -8192) scaled = -8192;
+  return scaled;
+}
+
 static inline void setChannelPB(uint8_t c) {   // c = 0..15
-  int32_t summed = (int32_t)rawPB[c] + (int32_t)globalPB - 8192;
+  int32_t summed = 8192 + mpeScaleBend((int32_t)rawPB[c] - 8192) + ((int32_t)globalPB - 8192);
   if (summed < 0) summed = 0;
   if (summed > 16383) summed = 16383;
   pendPB[c] = (uint16_t)summed;

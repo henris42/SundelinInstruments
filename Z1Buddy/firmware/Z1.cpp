@@ -2152,6 +2152,10 @@ void FLASHMEM Z1Edit::parseZ1SysExPreset(const uint8_t* sx, int len) {
     */
     zp.unison = patch[21];
     unisonFromPatch(patch[21]);
+    // Pitch bend range of the sound (bytes 145 and 146 of the program,
+    // checked against a dump of known values). The Buddy scales MPE bends by it.
+    editables[163]->set(patch[145]);
+    editables[164]->set(patch[146]);
     zp.detune = patch[22];
     /* 23 ("", Bits
         [ ("scale key", enum_bits 4 scale_keys)

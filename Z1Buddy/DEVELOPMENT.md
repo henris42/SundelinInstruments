@@ -450,10 +450,18 @@ the controller number held in the Buddy setting `C74To` (key 10001, default 7,
 which is Volume on the Z1). This is the Buddy's own equivalent of the MPE remapper
 in Live.
 
-**Global pitch bend.** A bend on channel 1 is added to every note channel's own
-bend, and all six are sent again at once, so a pitch wheel moves every sounding
-note. (Until 24 November 2026 it only changed a stored offset, which took effect
-when a note's own bend next moved.)
+**Per-note pitch bend** arrives in MPE scale, where full travel means 48
+semitones (`MPE_BEND_SEMITONES`). The Z1 plays a bend in the scale of the sound,
+whose range is program parameters 163 (up) and 164 (down), usually 2 semitones.
+The Buddy multiplies the bend by 48 ÷ range (`mpeScaleBend()`), so a key bent a
+semitone sounds a semitone higher whatever the sound's range, and a small range
+gets the Z1's full bend resolution. What does not fit the range is held at its
+end. The range is read from the program dump (bytes 145 and 146) and follows
+parameter changes; a sound whose range is 0 or reversed is left unscaled.
+
+**Global pitch bend.** A bend on channel 1 is added, unscaled, to every note
+channel's bend, and all six are sent again at once: a pitch wheel moves every
+sounding note by the sound's own range.
 
 ### The scheduler
 

@@ -133,10 +133,10 @@ have its own pitch bend, its own filter movement and its own pressure.
 
 | Gesture | Result on the Z1 |
 | --- | --- |
-| Sideways (per-note pitch bend) | Bends that note only |
+| Sideways (per-note pitch bend) | Bends that note only, in true pitch: a key bent a semitone sounds a semitone higher, up to the sound's pitch bend range |
 | Along the key (CC 74) | Sent as controller 7, volume, for that note |
 | Pressure | Channel aftertouch for that note |
-| Pitch bend on the global channel | Shifts all notes together |
+| Pitch bend on the global channel (a pitch wheel) | Shifts all notes together, by the sound's pitch bend range |
 | Other controllers on the global channel | Sent to all six voices |
 
 The CC 74 target is fixed at controller 7 for now. If you play through Live, the MPE

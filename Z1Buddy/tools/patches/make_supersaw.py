@@ -75,8 +75,8 @@ def build():
     put(24, 0)        # unison off: the Buddy does the stacking
     put(25, 0)
     put(30, 3)        # a little random pitch, so the saws never line up
-    put(163, 24)      # pitch bend up: 24 semitones, the most the Z1 allows
-    put(164, -24)     # pitch bend down
+    put(163, 2)       # pitch bend: 2 semitones up and down, as on a normal keyboard.
+    put(164, -2)      # In MPE mode the Buddy scales each key's bend to this range.
     put(165, 0)       # smooth
     put(166, 0)
     put(169, 0)       # portamento off
