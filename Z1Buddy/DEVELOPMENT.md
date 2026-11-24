@@ -51,6 +51,7 @@ tools/buddy go         # flash, then monitor
 tools/buddy port       # show which connected Teensy is the Z1 Buddy
 tools/buddy status     # ask the running Buddy for its debug status
 tools/buddy panic      # all notes off
+tools/buddy bend 60    # MPE mode: key bend depth, percent of true pitch
 ```
 
 - **The Buddy is found by its USB serial number** (13124960), never by its USB
@@ -241,6 +242,7 @@ F0 7D 5A 31 <command> <data...> F7
 | To the Buddy | `04 ww pt dt` | Set the three pots: wonkiness, portamento time, detune, 0–99 each; `7F` leaves one as it is |
 | To the Buddy | `05` | Send the debug status |
 | To the Buddy | `06` | Panic: note-off for every note the Buddy has on for the Z1, then All Notes Off on all channels |
+| To the Buddy | `07 pp` | Depth of a key's own bend in MPE mode, percent of true pitch, 0–127. 100 after power-up. |
 | From the Buddy | `11 mm uu ww bb pp pt dt` | Status |
 | From the Buddy | `12 …` | Debug status, see below |
 
@@ -458,6 +460,11 @@ semitone sounds a semitone higher whatever the sound's range, and a small range
 gets the Z1's full bend resolution. What does not fit the range is held at its
 end. The range is read from the program dump (bytes 145 and 146) and follows
 parameter changes; a sound whose range is 0 or reversed is left unscaled.
+
+How much of that true pitch a key gets is `mpeBendPercent`, 100 by default. It
+can be changed while playing with `tools/buddy bend <percent>` (Buddy sysex 07)
+to find what feels right on a given controller; the value is not kept over a
+power cycle, so the one that works should become the default in the code.
 
 **Global pitch bend.** A bend on channel 1 is added, unscaled, to every note
 channel's bend, and all six are sent again at once: a pitch wheel moves every

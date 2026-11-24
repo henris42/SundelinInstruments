@@ -10,6 +10,9 @@
 #   tools/buddy status     ask the running Buddy for its debug status: queues,
 #                          longest waits, counters, and which notes are on
 #   tools/buddy panic      silence: all notes off
+#   tools/buddy bend N     MPE mode: how much a key's sideways bend does, in
+#                          percent of true pitch (100 = a semitone of bend is
+#                          a semitone); until the Buddy is switched off
 #
 # The Buddy is found by its USB serial number, never by its position: several
 # Teensys are usually connected and their USB locations change.
@@ -124,6 +127,13 @@ case "$1" in
     printf '\360\175\132\061\006\367' > "$OUT/panic.syx"
     "$ROOT/tools/z1send" "$MIDI_PORT" "$OUT/panic.syx" > /dev/null && echo "all notes off sent"
     ;;
+  bend)
+    case "$2" in ''|*[!0-9]*) die "usage: tools/buddy bend <percent 0-127>" ;; esac
+    [ "$2" -le 127 ] || die "at most 127"
+    midi_tool z1send
+    printf "\\360\\175\\132\\061\\007\\$(printf '%03o' "$2")\\367" | xargs -0 printf > "$OUT/bend.syx"
+    "$ROOT/tools/z1send" "$MIDI_PORT" "$OUT/bend.syx" > /dev/null && echo "MPE bend depth set to $2 %"
+    ;;
   build) build ;;
   flash) flash ;;
   monitor) monitor ;;
@@ -133,5 +143,5 @@ case "$1" in
     [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found"
     echo "Z1 Buddy: upload port $port, debug output $SERIAL_DEV"
     ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -563,6 +563,11 @@ static uint16_t rawPB[16] = { 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192,
 // the bend gets the Z1's full resolution. What does not fit the range is
 // held at its end. A sound whose range is 0 or reversed is left unscaled.
 static constexpr int MPE_BEND_SEMITONES = 48;
+// How much of that true pitch a key's bend gets, in percent. 100: a key bent
+// a semitone sounds a semitone higher. Lower makes the keys less sensitive to
+// sideways movement. Set with Buddy sysex 07 (tools/buddy bend <percent>);
+// back at the value below after power-up.
+static int mpeBendPercent = 100;
 
 static inline int32_t mpeScaleBend(int32_t offset) {   // offset from the centre, -8192..8191
   int range = 0;
@@ -572,7 +577,7 @@ static inline int32_t mpeScaleBend(int32_t offset) {   // offset from the centre
     if (editables.count(164)) range = -editables[164]->getIval();
   }
   if (range <= 0) return offset;
-  int32_t scaled = offset * MPE_BEND_SEMITONES / range;
+  int32_t scaled = offset * MPE_BEND_SEMITONES / range * mpeBendPercent / 100;
   if (scaled > 8191) scaled = 8191;
   if (scaled < -8192) scaled = -8192;
   return scaled;
@@ -1544,6 +1549,8 @@ static void potSet(int i, int v) {
 //     05                  send the debug status (answer: 12 ..., see buddySendDebug)
 //     06                  panic: note-off for every note the Buddy has on for
 //                         the Z1, then All Notes Off on every channel
+//     07 pp               depth of a key's own bend in MPE mode, percent of true
+//                         pitch, 0-127 (100 = a semitone of bend is a semitone)
 //   from the Buddy:
 //     11 mm uu ww bb pp pt dt   status, sent when asked and whenever it changes
 //        mm  0 Normal, 1 entering MPE (waiting for the Z1), 2 MPE
@@ -1705,6 +1712,12 @@ static bool buddyHandle(const uint8_t* data, uint16_t length) {
       break;
     case 0x05: buddySendDebug(); break;
     case 0x06: buddyPanic(); break;
+    case 0x07:
+      if (length >= 7) {
+        mpeBendPercent = data[5];
+        Serial.printf("MPE bend depth %d %%\r\n", mpeBendPercent);
+      }
+      break;
   }
   return true;
 }
