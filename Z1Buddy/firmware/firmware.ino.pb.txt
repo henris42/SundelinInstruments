@@ -1,0 +1,1358 @@
+//#include <i2c_device.h>
+#include <i2c_driver.h>
+#include <i2c_driver_wire.h>
+//#include <i2c_register_slave.h>
+#include <string>
+
+#include <iomanip>
+#include <sstream>
+//#include "EventManager.h"
+#include <Bounce.h>
+#include <LiquidCrystal.h>
+
+#include "Z1.h"
+#include "SynthBuddy.h"
+
+//MIDI_CREATE_INSTANCE(HardwareSerial, Serial1, MIDI);
+
+//
+//using namespace std;
+
+asm(".global _printf_float");
+
+enum CandType : uint8_t { C_CC,
+                          C_POLY,
+                          C_CHPR,
+                          C_PB };
+
+struct Candidate {
+  CandType t;
+  uint8_t ch;    // 0..15 internal
+  uint8_t a;     // CC# or note (for CC/POLY); unused for CHPR/PB
+  uint16_t v;    // value (7-bit or 14-bit)
+  uint8_t size;  // MIDI bytes (2 or 3)
+  float score;   // higher = earlier
+};
+
+// MPE voice range: channels [2..MPE_MAX_CHANNEL] receive master PB/CC fan-out
+#ifndef MPE_MAX_CHANNEL
+#define MPE_MAX_CHANNEL 7  // clamp 2..16
+#endif
+
+// ---- Note precedence window (ms) ----
+#ifndef NOTE_PRECEDENCE_PAUSE_MS
+#define NOTE_PRECEDENCE_PAUSE_MS 2  // pause MPE drains briefly after Note On/Off
+#endif
+
+// ---------------- Adaptive Quantization / Drop Policy ----------------
+// These are *base* deadbands; the scheduler shrinks them when link has slack.
+#define BASE_Q_CC 4    // 7-bit
+#define BASE_Q_POLY 5  // 7-bit
+#define BASE_Q_CHPR 5  // 7-bit
+#define BASE_Q_PB 64  // 14-bit (0..16383)
+
+// Age booster: how fast score grows with age (ms -> multiplier)
+#define AGE_BOOST_PER_MS 0.002f
+
+// Refresh to avoid “stuck” values (send even if below deadband)
+#define REFRESH_MS_CC 60
+#define REFRESH_MS_POLY 120
+#define REFRESH_MS_CHPR 60
+#define REFRESH_MS_PB 40
+
+// Priority pacing (coarse, still respected)
+#define THROTTLE_PB_MS 2
+#define THROTTLE_CC_MS 5
+#define THROTTLE_POLY_MS 6
+#define THROTTLE_CHPR_MS 6
+
+// ---------------- Link/Budget Model ----------------
+// MIDI 31,250 bps ~ 3125 bytes/s ~ 3.125 bytes/ms
+#define MIDI_BYTES_PER_MS 3.125f
+
+// Limit how many items we score/sort per loop (keeps CPU tiny)
+#define MAX_CANDIDATES_PER_LOOP 32
+
+// Type weights (raise PB)
+#define WEIGHT_PB 1.8f
+#define WEIGHT_CC 1.0f
+#define WEIGHT_POLY 0.9f
+#define WEIGHT_CHPR 0.8f
+
+// -------- Error Budget (per-channel) --------
+// At each drain frame, we compute channel error scores and apportion the total byte budget.
+// Give every channel a tiny baseline so quiet channels aren’t starved.
+#define CH_MIN_BYTES_BASELINE 2  // minimum bytes each active channel may spend this frame
+#define CH_MIN_BYTES_IF_DIRTY 6  // if channel has ANY dirty data, ensure at least this budget
+
+
+//constants for the number of rows and columns in the LCD
+//In my example, I use a 20x4 LCD, thus it has 4 rows and 20 columns
+//If you use another LCD, type in the appropriate rows and columns below
+const int numRows = 2;
+const int numCols = 40;
+int led = 13;
+
+int pot0, pot1, pot2;
+int pot0_o, pot1_o, pot2_o;
+volatile bool int0, int1, int2, int3, int4, int5;
+
+//RS,E,D4,D5,D6,D7
+//initialize the library with the numbers of the interface pins
+LiquidCrystal lcd(6, 10, 36, 37, 32, 9);
+LiquidCrystal lcd3(6, 11, 36, 37, 32, 9);
+LiquidCrystal lcd2(6, 12, 36, 37, 32, 9);
+Z1Edit z;
+
+#define USE_DEBUG 1
+const size_t SYSEX_MAX = 1024;
+
+// ---------- DIN parser state ----------
+static uint8_t dinRunningStatus = 0;
+static uint8_t dinData1 = 0;
+static uint8_t dinNeeded = 0;
+
+static bool dinInSysEx = false;
+static bool dinSysExOverflow = false;
+static uint8_t sysexBuf[SYSEX_MAX];
+static size_t sysexLen = 0;
+static uint32_t lastNoteEventAt = 0;
+
+static uint8_t serinbuf[32];
+static uint8_t seroutbuf[32];
+
+
+
+// For budget accounting
+static uint32_t lastDrainAtMs = 0;
+// ================== Coalesced + ACTIVE DROP STATE ==================
+static uint8_t pendCC[16][128];      // latest value seen
+static bool dirtyCC[16][128];        // needs policy check
+static uint8_t lastSentCC[16][128];  // 0..127; 255=unset
+static uint32_t lastSentTimeCC[16][128];
+
+static uint8_t pendPoly[16][128];
+static bool dirtyPoly[16][128];
+static uint8_t lastSentPoly[16][128];  // 255=unset
+static uint32_t lastSentTimePoly[16][128];
+
+static uint8_t pendChPress[16];
+static bool dirtyChPress[16];
+static uint8_t lastSentChPress[16];  // 255=unset
+static uint32_t lastSentTimeChPr[16];
+
+static uint16_t pendPB[16];
+static bool dirtyPB[16];
+static uint16_t lastSentPB[16];  // 0..16383; 0xFFFF=unset
+static uint32_t lastSentTimePB[16];
+static uint16_t globalPB = 8192; // center
+
+static uint32_t nextCCSendAt = 0, nextPolySendAt = 0, nextChPressSendAt = 0, nextPBSendAt = 0;
+static uint16_t ccScan = 0, polyScan = 0;
+static uint8_t chPressScan = 0, pbScan = 0;
+
+
+
+
+Bounce S10 = Bounce(34, 150);
+Bounce S11 = Bounce(35, 150);
+Bounce SI0 = Bounce(7, 150);
+Bounce SI1 = Bounce(8, 150);
+Bounce SI2 = Bounce(28, 150);
+Bounce SI3 = Bounce(29, 150);
+
+
+//S10
+void p34Int() {
+  Serial.println("S10");
+}
+
+//S11
+void p35Int() {
+  Serial.println("S11");
+}
+
+
+void extInt0() {
+  int0 = true;
+}
+void extInt1() {
+  int1 = true;
+}
+void extInt2() {
+  int2 = true;
+}
+void extInt3() {
+  int3 = true;
+}
+void extInt4() {
+  int4 = true;
+}
+void extInt5() {
+  int5 = true;
+}
+
+
+// Teensy USB MIDI <-> DIN bridge (async, no external libs)
+// - Forwards channel/common/real-time both ways
+// - SysEx intercepted (<=1024 bytes) and delivered as one chunk to onSysEx()
+// - Oversize SysEx discarded via onSysExTooLong()
+// - USB Type: "Serial + MIDI" (or "MIDI" if you don't need Serial monitor)
+// - DIN: Serial1 @ 31250
+
+void sendcc(uint8_t channel, uint8_t cc, uint8_t value) {
+  Serial1.write(0xB0 | channel);
+  Serial1.write(cc);
+  Serial1.write(value);
+}
+
+
+
+// ---------- Helpers ----------
+static inline uint8_t dataBytesNeeded(uint8_t status) {
+  if (status >= 0xF0) {
+    switch (status) {
+      case 0xF0: return 0;  // SysEx start (handled separately)
+      case 0xF1: return 1;  // MTC Quarter Frame
+      case 0xF2: return 2;  // Song Position Pointer
+      case 0xF3: return 1;  // Song Select
+      case 0xF6: return 0;  // Tune Request
+      case 0xF7: return 0;  // End of SysEx
+      default: return 0;    // Real-time handled immediately
+    }
+  }
+  switch (status & 0xF0) {
+    case 0x80:
+    case 0x90:
+    case 0xA0:
+    case 0xB0:
+    case 0xE0: return 2;
+    case 0xC0:
+    case 0xD0: return 1;
+    default: return 0;
+  }
+}
+
+#if USE_DEBUG
+static void dbg(const char* s) {
+  Serial.println(s);
+}
+#else
+static void dbg(const char*) {}
+#endif
+
+
+// Initialize lastSent as "unset"
+static void initLastSentIfNeeded() {
+  static bool inited = false;
+  if (inited) return;
+  inited = true;
+  for (int ch = 0; ch < 16; ++ch) {
+    for (int i = 0; i < 128; ++i) {
+      lastSentCC[ch][i] = 0xFF;
+      lastSentPoly[ch][i] = 0xFF;
+      lastSentTimeCC[ch][i] = 0;
+      lastSentTimePoly[ch][i] = 0;
+      dirtyCC[ch][i] = false;
+      dirtyPoly[ch][i] = false;
+    }
+    lastSentChPress[ch] = 0xFF;
+    lastSentPB[ch] = 0xFFFF;
+    lastSentTimeChPr[ch] = 0;
+    lastSentTimePB[ch] = 0;
+    dirtyChPress[ch] = false;
+    dirtyPB[ch] = false;
+  }
+  lastDrainAtMs = millis();
+}
+
+// ---------------- Mark helpers ----------------
+static inline void markCC(uint8_t ch, uint8_t cc, uint8_t val) {
+  if (ch < 1 || ch > 16) return;
+  pendCC[ch - 1][cc] = val;
+  dirtyCC[ch - 1][cc] = true;
+}
+static inline void markPoly(uint8_t ch, uint8_t note, uint8_t val) {
+  if (ch < 1 || ch > 16) return;
+  pendPoly[ch - 1][note] = val;
+  dirtyPoly[ch - 1][note] = true;
+}
+static inline void markChPress(uint8_t ch, uint8_t val) {
+  if (ch < 1 || ch > 16) return;
+  pendChPress[ch - 1] = val;
+  dirtyChPress[ch - 1] = true;
+}
+static inline void markPB(uint8_t ch, uint16_t v14) {
+  if (ch < 1 || ch > 16) return;
+  if (ch == 1) {
+    // Save as global offset, don’t send directly
+    globalPB = v14;
+  } else {
+    // Apply global offset and clamp
+    int32_t summed = (int32_t)v14 + (int32_t)globalPB - 8192;
+    if (summed < 0) summed = 0;
+    if (summed > 16383) summed = 16383;
+    pendPB[ch-1] = (uint16_t)summed;
+    dirtyPB[ch-1] = true;
+  }
+}
+
+// ---------------- Active-drop tests ----------------
+static inline bool shouldSend7(uint8_t newv, uint8_t lastv, uint8_t base_q, float slack_factor, uint32_t now, uint32_t last_ts) {
+  if (newv == 0) return (lastv != 0);
+  if (lastv == 0xFF) return true;
+  float age_ms = last_ts ? (float)(now - last_ts) : 1.0f;
+  float qeff = (float)base_q / (1.0f + slack_factor * 0.7f) / (1.0f + AGE_BOOST_PER_MS * age_ms);
+  if (qeff < 1.0f) qeff = 1.0f;
+  uint8_t diff = (newv > lastv) ? (newv - lastv) : (lastv - newv);
+  return diff >= (uint8_t)qeff;
+}
+static inline bool shouldSend14(uint16_t newv, uint16_t lastv, uint16_t base_q, float slack_factor, uint32_t now, uint32_t last_ts) {
+  if (newv == 0) return (lastv != 0);
+  if (lastv == 0xFFFF) return true;
+  float age_ms = last_ts ? (float)(now - last_ts) : 1.0f;
+  float qeff = (float)base_q / (1.0f + slack_factor * 0.7f) / (1.0f + AGE_BOOST_PER_MS * age_ms);
+  if (qeff < 1.0f) qeff = 1.0f;
+  uint16_t diff = (newv > lastv) ? (newv - lastv) : (lastv - newv);
+  return diff >= (uint16_t)qeff;
+}
+
+// ---------------- Candidate and PQ ----------------
+
+
+static void pq_insert(Candidate* arr, int& n, const Candidate& c) {
+  if (n >= MAX_CANDIDATES_PER_LOOP && c.score <= arr[n - 1].score) return;
+  if (n < MAX_CANDIDATES_PER_LOOP) n++;
+  int i = n - 2;
+  while (i >= 0 && arr[i].score < c.score) {
+    arr[i + 1] = arr[i];
+    i--;
+  }
+  arr[i + 1] = c;
+}
+
+// ---------------- Budget helpers ----------------
+static inline int compute_bytes_budget(uint32_t now) {
+  if (lastDrainAtMs == 0) lastDrainAtMs = now;
+  uint32_t dt = now - lastDrainAtMs;
+  float gen = dt * MIDI_BYTES_PER_MS;      // bytes “available” since last drain
+  int room = Serial1.availableForWrite();  // hw buffer headroom
+  int budget = (int)gen;
+  if (budget > room) budget = room;
+  if (budget < 0) budget = 0;
+  return budget;
+}
+static inline float slack_factor_from_budget(int bytes_budget) {
+  if (bytes_budget <= 0) return 0.0f;
+  if (bytes_budget >= 24) return 2.0f;
+  return bytes_budget / 12.0f;  // up to ~2.0
+}
+
+// ---------------- Per-channel ERROR BUDGET allocation ----------------
+static void compute_channel_error_scores(uint32_t now, float chErr[16], bool chHasDirty[16]) {
+  for (int ch = 0; ch < 16; ++ch) {
+    chErr[ch] = 0.0f;
+    chHasDirty[ch] = false;
+  }
+
+  // PB
+  for (int ch = 0; ch < 16; ++ch)
+    if (dirtyPB[ch]) {
+      chHasDirty[ch] = true;
+      uint16_t nv = pendPB[ch], lv = lastSentPB[ch];
+      float err = (lv == 0xFFFF) ? (float)BASE_Q_PB : (float)abs((int)nv - (int)lv);
+      chErr[ch] += WEIGHT_PB * (err / (float)BASE_Q_PB);
+    }
+  // CC (scan all)
+  for (int idx = 0; idx < 2048; ++idx) {
+    int ch = idx / 128;
+    int cc = idx % 128;
+    if (!dirtyCC[ch][cc]) continue;
+    chHasDirty[ch] = true;
+    uint8_t nv = pendCC[ch][cc], lv = lastSentCC[ch][cc];
+    float err = (lv == 0xFF) ? (float)BASE_Q_CC : (float)abs((int)nv - (int)lv);
+    chErr[ch] += WEIGHT_CC * (err / (float)BASE_Q_CC);
+  }
+  // Poly
+  for (int idx = 0; idx < 2048; ++idx) {
+    int ch = idx / 128;
+    int note = idx % 128;
+    if (!dirtyPoly[ch][note]) continue;
+    chHasDirty[ch] = true;
+    uint8_t nv = pendPoly[ch][note], lv = lastSentPoly[ch][note];
+    float err = (lv == 0xFF) ? (float)BASE_Q_POLY : (float)abs((int)nv - (int)lv);
+    chErr[ch] += WEIGHT_POLY * (err / (float)BASE_Q_POLY);
+  }
+  // Channel Pressure
+  for (int ch = 0; ch < 16; ++ch)
+    if (dirtyChPress[ch]) {
+      chHasDirty[ch] = true;
+      uint8_t nv = pendChPress[ch], lv = lastSentChPress[ch];
+      float err = (lv == 0xFF) ? (float)BASE_Q_CHPR : (float)abs((int)nv - (int)lv);
+      chErr[ch] += WEIGHT_CHPR * (err / (float)BASE_Q_CHPR);
+    }
+}
+
+static void apportion_channel_budgets(int totalBytes, const float chErr[16], const bool chHasDirty[16], int chBytes[16]) {
+  // Sum errors
+  float sumErr = 0.0f;
+  for (int ch = 0; ch < 16; ++ch) sumErr += chErr[ch];
+
+  // Baseline guarantees
+  int activeChannels = 0;
+  for (int ch = 0; ch < 16; ++ch)
+    if (chHasDirty[ch]) activeChannels++;
+
+  int baseline = 0;
+  for (int ch = 0; ch < 16; ++ch) {
+    if (chHasDirty[ch]) {
+      chBytes[ch] = CH_MIN_BYTES_IF_DIRTY;
+      baseline += CH_MIN_BYTES_IF_DIRTY;
+    } else {
+      chBytes[ch] = CH_MIN_BYTES_BASELINE;
+      baseline += CH_MIN_BYTES_BASELINE;
+    }
+  }
+  if (baseline > totalBytes) {
+    // Not enough room even for baselines; scale them down
+    float scale = (float)totalBytes / (float)baseline;
+    int used = 0;
+    for (int ch = 0; ch < 16; ++ch) {
+      chBytes[ch] = (int)((float)chBytes[ch] * scale);
+      if (chBytes[ch] < 0) chBytes[ch] = 0;
+      used += chBytes[ch];
+    }
+    // Any leftover due to rounding
+    while (used < totalBytes) {
+      int best = -1;
+      float bestErr = -1.0f;
+      for (int ch = 0; ch < 16; ++ch)
+        if (chHasDirty[ch]) {
+          if (chErr[ch] > bestErr) {
+            bestErr = chErr[ch];
+            best = ch;
+          }
+        }
+      if (best < 0) break;
+      chBytes[best]++;
+      used++;
+    }
+    return;
+  }
+
+  int remaining = totalBytes - baseline;
+  if (remaining <= 0 || sumErr <= 0.0f) return;
+
+  // Distribute remaining proportionally by error scores
+  int used = baseline;
+  for (int ch = 0; ch < 16; ++ch) {
+    int add = (int)((chErr[ch] / sumErr) * remaining);
+    chBytes[ch] += add;
+    used += add;
+  }
+  // Fix rounding leftovers
+  while (used < totalBytes) {
+    int best = -1;
+    float bestErr = -1.0f;
+    for (int ch = 0; ch < 16; ++ch) {
+      if (chErr[ch] > bestErr) {
+        bestErr = chErr[ch];
+        best = ch;
+      }
+    }
+    if (best < 0) break;
+    chBytes[best]++;
+    used++;
+  }
+}
+
+// ---------------- Priority drain with error budget ----------------
+static void drainUSBCoalescedToDIN() {
+  initLastSentIfNeeded();
+
+  // NOTE-FIRST RULE: pause MPE drains briefly after a note event
+  const uint32_t now = millis();
+  if ((now - lastNoteEventAt) < NOTE_PRECEDENCE_PAUSE_MS) return;
+
+  // Compute total bytes budget for this frame
+  int totalBudget = compute_bytes_budget(now);
+  if (totalBudget <= 0) return;
+
+  float slack = slack_factor_from_budget(totalBudget);
+
+  // Build a small PQ of best candidates overall
+  Candidate pq[MAX_CANDIDATES_PER_LOOP];
+  int pn = 0;
+
+  // Gather candidates (PB first scan so they tend to rank higher)
+  if (now >= nextPBSendAt) {
+    for (uint8_t k = 0; k < 16; ++k) {
+      uint8_t ch = (pbScan + k) & 0x0F;
+      if (!dirtyPB[ch]) continue;
+      uint16_t nv = pendPB[ch], lv = lastSentPB[ch];
+      bool sendZero = (nv == 0 && lv != 0);
+      bool bigEnough = shouldSend14(nv, lv, BASE_Q_PB, slack, now, lastSentTimePB[ch]);
+      if (sendZero || bigEnough) {
+        Candidate c;
+        c.t = C_PB;
+        c.ch = ch;
+        c.a = 0;
+        c.v = nv;
+        c.size = 3;
+        float err = (lv == 0xFFFF) ? (float)BASE_Q_PB : (float)abs((int)nv - (int)lv);
+        float age_ms = lastSentTimePB[ch] ? (float)(now - lastSentTimePB[ch]) : 1.0f;
+        c.score = WEIGHT_PB * (err / (float)BASE_Q_PB) * (1.0f + AGE_BOOST_PER_MS * age_ms);
+        pq_insert(pq, pn, c);
+      } else if (lastSentTimePB[ch] && (now - lastSentTimePB[ch] >= REFRESH_MS_PB) && nv != lv) {
+        Candidate c;
+        c.t = C_PB;
+        c.ch = ch;
+        c.a = 0;
+        c.v = nv;
+        c.size = 3;
+        c.score = WEIGHT_PB * 0.7f;
+        pq_insert(pq, pn, c);
+      }
+      if (pn >= MAX_CANDIDATES_PER_LOOP) break;
+    }
+  }
+
+  if (now >= nextCCSendAt && pn < MAX_CANDIDATES_PER_LOOP) {
+    for (uint16_t i = 0; i < 2048; ++i) {
+      uint16_t idx = (ccScan + i) & 2047;
+      uint8_t ch = (idx / 128), cc = (idx % 128);
+      if (!dirtyCC[ch][cc]) continue;
+      uint8_t nv = pendCC[ch][cc], lv = lastSentCC[ch][cc];
+      bool sendZero = (nv == 0 && lv != 0);
+      bool bigEnough = shouldSend7(nv, lv, BASE_Q_CC, slack, now, lastSentTimeCC[ch][cc]);
+      if (sendZero || bigEnough) {
+        Candidate c;
+        c.t = C_CC;
+        c.ch = ch;
+        c.a = cc;
+        c.v = nv;
+        c.size = 3;
+        float err = (lv == 0xFF) ? (float)BASE_Q_CC : (float)abs((int)nv - (int)lv);
+        float age_ms = lastSentTimeCC[ch][cc] ? (float)(now - lastSentTimeCC[ch][cc]) : 1.0f;
+        c.score = WEIGHT_CC * (err / (float)BASE_Q_CC) * (1.0f + AGE_BOOST_PER_MS * age_ms);
+        pq_insert(pq, pn, c);
+      } else if (lastSentTimeCC[ch][cc] && (now - lastSentTimeCC[ch][cc] >= REFRESH_MS_CC) && nv != lv) {
+        Candidate c;
+        c.t = C_CC;
+        c.ch = ch;
+        c.a = cc;
+        c.v = nv;
+        c.size = 3;
+        c.score = WEIGHT_CC * 0.75f;
+        pq_insert(pq, pn, c);
+      }
+      if (pn >= MAX_CANDIDATES_PER_LOOP) break;
+    }
+  }
+
+  if (now >= nextPolySendAt && pn < MAX_CANDIDATES_PER_LOOP) {
+    for (uint16_t i = 0; i < 2048; ++i) {
+      uint16_t idx = (polyScan + i) & 2047;
+      uint8_t ch = (idx / 128), note = (idx % 128);
+      if (!dirtyPoly[ch][note]) continue;
+      uint8_t nv = pendPoly[ch][note], lv = lastSentPoly[ch][note];
+      bool sendZero = (nv == 0 && lv != 0);
+      bool bigEnough = shouldSend7(nv, lv, BASE_Q_POLY, slack, now, lastSentTimePoly[ch][note]);
+      if (sendZero || bigEnough) {
+        Candidate c;
+        c.t = C_POLY;
+        c.ch = ch;
+        c.a = note;
+        c.v = nv;
+        c.size = 3;
+        float err = (lv == 0xFF) ? (float)BASE_Q_POLY : (float)abs((int)nv - (int)lv);
+        float age_ms = lastSentTimePoly[ch][note] ? (float)(now - lastSentTimePoly[ch][note]) : 1.0f;
+        c.score = WEIGHT_POLY * (err / (float)BASE_Q_POLY) * (1.0f + AGE_BOOST_PER_MS * age_ms);
+        pq_insert(pq, pn, c);
+      } else if (lastSentTimePoly[ch][note] && (now - lastSentTimePoly[ch][note] >= REFRESH_MS_POLY) && nv != lv) {
+        Candidate c;
+        c.t = C_POLY;
+        c.ch = ch;
+        c.a = note;
+        c.v = nv;
+        c.size = 3;
+        c.score = WEIGHT_POLY * 0.70f;
+        pq_insert(pq, pn, c);
+      }
+      if (pn >= MAX_CANDIDATES_PER_LOOP) break;
+    }
+  }
+
+  if (now >= nextChPressSendAt && pn < MAX_CANDIDATES_PER_LOOP) {
+    for (uint8_t k = 0; k < 16; ++k) {
+      uint8_t ch = (chPressScan + k) & 0x0F;
+      if (!dirtyChPress[ch]) continue;
+      uint8_t nv = pendChPress[ch], lv = lastSentChPress[ch];
+      bool sendZero = (nv == 0 && lv != 0);
+      bool bigEnough = shouldSend7(nv, lv, BASE_Q_CHPR, slack, now, lastSentTimeChPr[ch]);
+      if (sendZero || bigEnough) {
+        Candidate c;
+        c.t = C_CHPR;
+        c.ch = ch;
+        c.a = 0;
+        c.v = nv;
+        c.size = 2;
+        float err = (lv == 0xFF) ? (float)BASE_Q_CHPR : (float)abs((int)nv - (int)lv);
+        float age_ms = lastSentTimeChPr[ch] ? (float)(now - lastSentTimeChPr[ch]) : 1.0f;
+        c.score = WEIGHT_CHPR * (err / (float)BASE_Q_CHPR) * (1.0f + AGE_BOOST_PER_MS * age_ms);
+        pq_insert(pq, pn, c);
+      } else if (lastSentTimeChPr[ch] && (now - lastSentTimeChPr[ch] >= REFRESH_MS_CHPR) && nv != lv) {
+        Candidate c;
+        c.t = C_CHPR;
+        c.ch = ch;
+        c.a = 0;
+        c.v = nv;
+        c.size = 2;
+        c.score = WEIGHT_CHPR * 0.60f;
+        pq_insert(pq, pn, c);
+      }
+      if (pn >= MAX_CANDIDATES_PER_LOOP) break;
+    }
+  }
+
+  if (pn == 0) {
+    lastDrainAtMs = now;
+    return;
+  }
+
+  // ---- Per-channel ERROR BUDGET allocation ----
+  float chErr[16];
+  bool chHasDirty[16];
+  compute_channel_error_scores(now, chErr, chHasDirty);
+
+  int chBytesBudget[16];
+  for (int ch = 0; ch < 16; ++ch) chBytesBudget[ch] = 0;
+  apportion_channel_budgets(totalBudget, chErr, chHasDirty, chBytesBudget);
+
+  // ---- Emit by descending score, respecting both total & per-channel budgets ----
+  int budgetLeft = totalBudget;
+  for (int i = 0; i < pn && budgetLeft > 0; ++i) {
+    Candidate& c = pq[i];
+    int need = c.size;
+    if (need > budgetLeft) continue;
+    if (Serial1.availableForWrite() < need) continue;
+    if (chBytesBudget[c.ch] < need) continue;  // not enough per-channel budget
+
+    // Send
+    switch (c.t) {
+      case C_PB:
+        sendPB_toDIN(c.ch + 1, (uint16_t)c.v);
+        lastSentPB[c.ch] = (uint16_t)c.v;
+        lastSentTimePB[c.ch] = now;
+        dirtyPB[c.ch] = false;
+        pbScan = (c.ch + 1) & 0x0F;
+        nextPBSendAt = now + THROTTLE_PB_MS;
+        break;
+
+      case C_CC:
+        sendCC_toDIN(c.ch + 1, c.a, (uint8_t)c.v);
+        lastSentCC[c.ch][c.a] = (uint8_t)c.v;
+        lastSentTimeCC[c.ch][c.a] = now;
+        dirtyCC[c.ch][c.a] = false;
+        ccScan = ((c.ch * 128 + c.a) + 1) & 2047;
+        nextCCSendAt = now + THROTTLE_CC_MS;
+        break;
+
+      case C_POLY:
+        sendPoly_toDIN(c.ch + 1, c.a, (uint8_t)c.v);
+        lastSentPoly[c.ch][c.a] = (uint8_t)c.v;
+        lastSentTimePoly[c.ch][c.a] = now;
+        dirtyPoly[c.ch][c.a] = false;
+        polyScan = ((c.ch * 128 + c.a) + 1) & 2047;
+        nextPolySendAt = now + THROTTLE_POLY_MS;
+        break;
+
+      case C_CHPR:
+        sendChPress_toDIN(c.ch + 1, (uint8_t)c.v);
+        lastSentChPress[c.ch] = (uint8_t)c.v;
+        lastSentTimeChPr[c.ch] = now;
+        dirtyChPress[c.ch] = false;
+        chPressScan = (c.ch + 1) & 0x0F;
+        nextChPressSendAt = now + THROTTLE_CHPR_MS;
+        break;
+    }
+
+    chBytesBudget[c.ch] -= need;
+    budgetLeft -= need;
+  }
+
+  // Update global drain timestamp
+  lastDrainAtMs = now;
+}
+
+
+
+// ============ App hooks ============
+void onSysEx(const uint8_t* data, size_t length, bool fromUSB) {
+#if USE_DEBUG
+  Serial.print(fromUSB ? "[USB] " : "[DIN] ");
+  Serial.print("SysEx chunk: ");
+  Serial.print(length);
+  Serial.println(" bytes");
+  //for(int i=0;i<(int)length;i++) Serial.printf("%02x ",data[i]);
+  //Serial.println("");
+
+#endif
+  if (length == 664) z.parseZ1SysExPreset(data, length);
+  else if (length == 298) {
+    Serial.println(" received arp msg");
+    if (z.getMainState() == mainState::MPEPRE2) {
+      //set voice mode to mono
+      z.sendZ1ProgParm(0, 1, 21, 0);
+      z.setMainState(mainState::MPE);
+    }
+  } else if (length == 9) z.parseZ1SysExParam(data, length);
+  else if (length == 4) {
+    Serial.println(" received dump msg");
+    if (z.getMainState() == mainState::MPEPRE) {
+      if (data[3] == 0x21) {
+        Serial.println(" write completed");
+        z.setMainState(mainState::MPEPRE2);
+      }
+    }
+  } else if (length == 6) {
+    for (int i = 0; i < (int)length; i++) Serial.printf("%02x ", data[i]);
+  }
+}
+
+void onSysExTooLong(bool fromUSB) {
+#if USE_DEBUG
+  Serial.println(fromUSB ? "[USB] SysEx too long (discarded)"
+                         : "[DIN] SysEx too long (discarded)");
+#endif
+}
+
+// --- MPE hooks (USB side) ---
+void onMPE_NoteOn(uint8_t ch, uint8_t note, uint8_t vel) {
+  //Serial.printf("noteon %d %d %d\r\n", ch, d1, d2);
+}
+void onMPE_NoteOff(uint8_t ch, uint8_t note, uint8_t vel) {
+  //Serial.printf("noteoff %d %d %d\r\n", ch, d1, d2);
+}
+
+
+void onMPE_PolyPressure(uint8_t ch, uint8_t note, uint8_t press) { /* stub */
+}
+void onMPE_ChannelPressure(uint8_t ch, uint8_t press) { /* stub */
+}
+void onMPE_PitchBend(uint8_t ch, int value14) {
+  //Serial.printf("pb %d %d\r\n", ch, value14);
+}
+void onMPE_CC(uint8_t ch, uint8_t cc, uint8_t val) { /* stub */
+}
+
+// ---------- Forwarding: DIN -> USB ----------
+static void forwardDIN_ChannelMsg_ToUSB(uint8_t status, uint8_t d1, uint8_t d2) {
+  uint8_t type = status & 0xF0;
+  uint8_t ch = (status & 0x0F) + 1;  // usbMIDI uses 1..16
+  switch (type) {
+    case 0x80: usbMIDI.sendNoteOff(d1, d2, ch); break;
+    case 0x90: usbMIDI.sendNoteOn(d1, d2, ch); break;
+    case 0xA0: usbMIDI.sendPolyPressure(d1, d2, ch); break;
+    case 0xB0: usbMIDI.sendControlChange(d1, d2, ch); break;
+    case 0xC0: usbMIDI.sendProgramChange(d1, ch); break;
+    case 0xD0: usbMIDI.sendAfterTouch(d1, ch); break;
+    case 0xE0:
+      {
+        int value14 = ((int)d2 << 7) | d1;          // 0..16383
+        usbMIDI.sendPitchBend(value14 - 8192, ch);  // Teensy expects -8192..+8191
+      }
+      break;
+  }
+}
+
+static void forwardDIN_SystemCommon_ToUSB(uint8_t status, uint8_t d1, uint8_t d2) {
+  switch (status) {
+    case 0xF1:
+      {  // MTC Quarter Frame: split nibbles
+        uint8_t typeNib = (d1 >> 4) & 0x07;
+        uint8_t valNib = d1 & 0x0F;
+        usbMIDI.sendTimeCodeQuarterFrame(typeNib, valNib);
+      }
+      break;
+    case 0xF2: usbMIDI.sendSongPosition(((int)d2 << 7) | d1); break;
+    case 0xF3: usbMIDI.sendSongSelect(d1); break;
+    case 0xF6: usbMIDI.sendTuneRequest(); break;
+    default: break;
+  }
+}
+
+static void forwardDIN_RealTime_ToUSB(uint8_t rt) {
+  switch (rt) {
+    //case 0xF8: usbMIDI.sendRealTime(usbMIDI.Clock); break;
+    case 0xFA: usbMIDI.sendRealTime(usbMIDI.Start); break;
+    case 0xFB: usbMIDI.sendRealTime(usbMIDI.Continue); break;
+    case 0xFC: usbMIDI.sendRealTime(usbMIDI.Stop); break;
+    case 0xFE: usbMIDI.sendRealTime(usbMIDI.ActiveSensing); break;
+    case 0xFF: usbMIDI.sendRealTime(usbMIDI.SystemReset); break;
+    default: break;
+  }
+}
+
+#if defined(__IMXRT1062__) && ENABLE_T41_UART_DMA
+// Placeholder for a true DMA-backed TX feeder (driver-specific).
+// Provide uartTxWrite() so the rest of the code stays identical.
+static inline size_t uartTxWrite(const uint8_t* data, size_t n) {
+  // TODO: implement DMAChannel to LPUART6 DATA register.
+  // Fallback for now:
+  return Serial1.write(data, n);
+}
+#else
+// Safe default: write with availableForWrite() back-pressure
+static inline size_t uartTxWrite(const uint8_t* data, size_t n) {
+  size_t sent = 0;
+  while (sent < n) {
+    int room = Serial1.availableForWrite();
+    if (room <= 0) break;
+    size_t chunk = (size_t)room;
+    if (chunk > (n - sent)) chunk = n - sent;
+    sent += Serial1.write(data + sent, chunk);
+  }
+  return sent;
+}
+#endif
+
+// Tiny helpers to send single MIDI messages (raw bytes) via uartTxWrite()
+static inline void sendCC_toDIN(uint8_t ch, uint8_t cc, uint8_t val) {
+  uint8_t m[3] = { (uint8_t)(0xB0 | ((ch - 1) & 0x0F)), cc, val };
+  uartTxWrite(m, 3);
+}
+static inline void sendPoly_toDIN(uint8_t ch, uint8_t note, uint8_t val) {
+  uint8_t m[3] = { (uint8_t)(0xA0 | ((ch - 1) & 0x0F)), note, val };
+  uartTxWrite(m, 3);
+}
+static inline void sendChPress_toDIN(uint8_t ch, uint8_t val) {
+  uint8_t m[2] = { (uint8_t)(0xD0 | ((ch - 1) & 0x0F)), val };
+  uartTxWrite(m, 2);
+}
+static inline void sendPB_toDIN(uint8_t ch, uint16_t v14) {
+  uint8_t lsb = v14 & 0x7F, msb = (v14 >> 7) & 0x7F;
+  uint8_t m[3] = { (uint8_t)(0xE0 | ((ch - 1) & 0x0F)), lsb, msb };
+  uartTxWrite(m, 3);
+}
+static inline void forwardUSB_ChannelMsg_ToDIN(uint8_t status, uint8_t d1, uint8_t d2, uint8_t needed) {
+  if (needed == 1) {
+    uint8_t m[2] = { status, d1 };
+    uartTxWrite(m, 2);
+  } else {
+    uint8_t m[3] = { status, d1, d2 };
+    uartTxWrite(m, 3);
+  }
+}
+static inline void forwardUSB_SystemCommon_ToDIN(uint8_t status, uint8_t d1, uint8_t d2) {
+  if (status == 0xF2) {
+    uint8_t m[3] = { status, d1, d2 };
+    uartTxWrite(m, 3);
+  } else if (status == 0xF1 || status == 0xF3) {
+    uint8_t m[2] = { status, d1 };
+    uartTxWrite(m, 2);
+  } else {
+    uint8_t m[1] = { status };
+    uartTxWrite(m, 1);
+  }
+}
+static inline void forwardUSB_RealTime_ToDIN(uint8_t rt) {
+  uint8_t b = rt;
+  uartTxWrite(&b, 1);
+}
+
+
+
+
+
+// ---------- DIN parser (non-blocking; SysEx single-chunk) ----------
+void processDIN() {
+  while (Serial1.available()) {
+    uint8_t b = Serial1.read();
+
+    // Real-time can appear anywhere; forward immediately
+    if (b >= 0xF8) {
+      forwardDIN_RealTime_ToUSB(b);
+      continue;
+    }
+
+    if (dinInSysEx) {
+      if (b == 0xF7) {
+        if (dinSysExOverflow) onSysExTooLong(false);
+        else onSysEx(sysexBuf, sysexLen, /*fromUSB=*/false);
+        dinInSysEx = false;
+        dinSysExOverflow = false;
+        sysexLen = 0;
+      } else if (b == 0xF0) {
+        dinSysExOverflow = false;
+        sysexLen = 0;  // restart
+      } else {
+        if (!dinSysExOverflow) {
+          if (sysexLen < SYSEX_MAX) sysexBuf[sysexLen++] = b;
+          else dinSysExOverflow = true;  // drain until F7
+        }
+      }
+      continue;
+    }
+
+    if (b & 0x80) {  // status
+      if (b == 0xF0) {
+        dinInSysEx = true;
+        dinSysExOverflow = false;
+        sysexLen = 0;
+        continue;
+      }
+      dinRunningStatus = b;
+      dinNeeded = dataBytesNeeded(b);
+      dinData1 = 0;
+      if (dinNeeded == 0 && b >= 0xF0) forwardDIN_SystemCommon_ToUSB(b, 0, 0);
+      continue;
+    }
+
+    // data
+    if (dinRunningStatus == 0) continue;
+    if (dinNeeded == 2) {
+      dinData1 = b;
+      dinNeeded = 1;
+    } else if (dinNeeded == 1) {
+      uint8_t status = dinRunningStatus;
+      if (status >= 0xF0) forwardDIN_SystemCommon_ToUSB(status, dinData1, b);
+      else forwardDIN_ChannelMsg_ToUSB(status, dinData1, b);
+      dinNeeded = dataBytesNeeded(status);  // running status may continue
+    }
+  }
+}
+
+// ---------- USB readers ----------
+void handleUSB_SysEx(const uint8_t* data, uint16_t length, bool complete) {
+  if (!complete) return;  // single-chunk delivery only
+  if (length <= SYSEX_MAX) onSysEx(data, length, /*fromUSB=*/true);
+  else onSysExTooLong(true);
+}
+
+void processUSB() {
+  while (usbMIDI.read()) {
+    uint8_t type = usbMIDI.getType();
+
+    if (type == usbMIDI.SystemExclusive) continue;  // callback handles it
+    if (type >= 0xF8) {
+      forwardUSB_RealTime_ToDIN(type);
+      continue;
+    }
+
+    uint8_t ch = usbMIDI.getChannel();  // 1..16
+    uint8_t d1 = usbMIDI.getData1();
+    uint8_t d2 = usbMIDI.getData2();
+    if (z.getMainState() == mainState::NORMAL) {
+      ch = 1;
+      switch (type) {
+        case usbMIDI.NoteOff:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0x80 | ((ch - 1) & 0x0F)), d1, d2, 2);
+          lastNoteEventAt = millis();
+          onMPE_NoteOff(ch, d1, d2);
+          break;
+
+        case usbMIDI.NoteOn:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0x90 | ((ch - 1) & 0x0F)), d1, d2, 2);
+          lastNoteEventAt = millis();
+          onMPE_NoteOn(ch, d1, d2);
+          break;
+
+        // ---- ACTIVE-DROPPED STREAMS (fan-out on ch1) ----
+        case usbMIDI.ControlChange:
+          {
+            onMPE_CC(ch, d1, d2);
+            
+            markCC(ch, d1, d2);
+            
+          }
+          break;
+
+        case usbMIDI.AfterTouchPoly:
+          markPoly(ch, d1, d2);
+          onMPE_PolyPressure(ch, d1, d2);
+          break;
+
+        case usbMIDI.AfterTouchChannel:
+          markChPress(ch, d1);
+          onMPE_ChannelPressure(ch, d1);
+          break;
+
+        case usbMIDI.PitchBend:
+          {
+            uint16_t v14 = ((uint16_t)d2 << 7) | (d1 & 0x7F);
+            onMPE_PitchBend(ch, v14);
+            
+            markPB(ch, v14);
+            
+          }
+          break;
+
+        // Immediate system/common
+        case usbMIDI.ProgramChange:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0xC0 | ((ch - 1) & 0x0F)), d1, 0, 1);
+          break;
+        case usbMIDI.TimeCodeQuarterFrame:
+          {
+            uint8_t dataByte = ((d1 & 0x07) << 4) | (d2 & 0x0F);
+            forwardUSB_SystemCommon_ToDIN(0xF1, dataByte, 0);
+          }
+          break;
+        case usbMIDI.SongPosition:
+          forwardUSB_SystemCommon_ToDIN(0xF2, d1, d2);
+          break;
+        case usbMIDI.SongSelect:
+          forwardUSB_SystemCommon_ToDIN(0xF3, d1, 0);
+          break;
+        case usbMIDI.TuneRequest:
+          forwardUSB_SystemCommon_ToDIN(0xF6, 0, 0);
+          break;
+        default: break;
+      }
+
+    } else {  //if we are in MPE mode forward global changes to voice channels
+      switch (type) {
+        case usbMIDI.NoteOff:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0x80 | ((ch - 1) & 0x0F)), d1, d2, 2);
+          lastNoteEventAt = millis();
+          onMPE_NoteOff(ch, d1, d2);
+          break;
+
+        case usbMIDI.NoteOn:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0x90 | ((ch - 1) & 0x0F)), d1, d2, 2);
+          lastNoteEventAt = millis();
+          onMPE_NoteOn(ch, d1, d2);
+          break;
+
+        // ---- ACTIVE-DROPPED STREAMS (fan-out on ch1) ----
+        case usbMIDI.ControlChange:
+          {
+            onMPE_CC(ch, d1, d2);
+            Serial.printf("CC %d %d %d\r\n",ch,d1,d2);
+            if(d1==74)d1=editables[10001]->getIval();
+            if (ch == 1) {
+              uint8_t last = (MPE_MAX_CHANNEL < 2) ? 1 : (MPE_MAX_CHANNEL > 16 ? 16 : MPE_MAX_CHANNEL);
+              for (uint8_t v = 2; v <= last; ++v) markCC(v, d1, d2);
+            } else {
+              markCC(ch, d1, d2);
+            }
+          }
+          break;
+
+        case usbMIDI.AfterTouchPoly:
+          markPoly(ch, d1, d2);
+          onMPE_PolyPressure(ch, d1, d2);
+          break;
+
+        case usbMIDI.AfterTouchChannel:
+          markChPress(ch, d1);
+          onMPE_ChannelPressure(ch, d1);
+          break;
+
+        case usbMIDI.PitchBend:
+          {
+            uint16_t v14 = ((uint16_t)d2 << 7) | (d1 & 0x7F);
+           
+              markPB(ch, v14);
+            
+          }
+          break;
+
+        // Immediate system/common
+        case usbMIDI.ProgramChange:
+          forwardUSB_ChannelMsg_ToDIN((uint8_t)(0xC0 | ((ch - 1) & 0x0F)), d1, 0, 1);
+          break;
+        case usbMIDI.TimeCodeQuarterFrame:
+          {
+            uint8_t dataByte = ((d1 & 0x07) << 4) | (d2 & 0x0F);
+            forwardUSB_SystemCommon_ToDIN(0xF1, dataByte, 0);
+          }
+          break;
+        case usbMIDI.SongPosition:
+          forwardUSB_SystemCommon_ToDIN(0xF2, d1, d2);
+          break;
+        case usbMIDI.SongSelect:
+          forwardUSB_SystemCommon_ToDIN(0xF3, d1, 0);
+          break;
+        case usbMIDI.TuneRequest:
+          forwardUSB_SystemCommon_ToDIN(0xF6, 0, 0);
+          break;
+        default: break;
+      }
+    }
+  }
+
+  drainUSBCoalescedToDIN();
+  usbMIDI.send_now();  // flush
+}
+
+
+
+
+
+
+void setup() {
+
+  pinMode(34, INPUT);
+  pinMode(35, INPUT);
+  pinMode(7, INPUT);
+  pinMode(8, INPUT);
+  pinMode(28, INPUT);
+  pinMode(29, INPUT);
+
+  // ---------- Setup / Loop ----------
+#if USE_DEBUG
+  Serial.begin(115200);
+  while (!Serial && millis() < 2000) {}
+  dbg("MIDI bridge starting...");
+#endif
+
+  Serial1.begin(31250);
+  Serial1.addMemoryForRead(serinbuf, 32);
+  Serial1.addMemoryForWrite(seroutbuf, 32);
+  usbMIDI.setHandleSysEx(handleUSB_SysEx);
+
+
+
+
+
+  //MIDI.begin(MIDI_CHANNEL_OMNI);
+
+  Serial.println("i2c setup");
+  Wire.setClock(1000000);
+  //Wire.setClock(400000);
+  //Wire.begin(I2C_MASTER, 0x00, I2C_PINS_18_19, I2C_PULLUP_EXT, I2C_RATE_1800, I2C_OP_MODE_DMA);
+  Wire.begin();
+  //Wire.resetBus();
+  Wire.beginTransmission(MCP_LB1);
+  Wire.write(MCP23017_IODIRA);
+  Wire.write(0x00);  // set all of port A to outputs
+  Wire.endTransmission();
+  Wire.beginTransmission(MCP_LB1);
+  Wire.write(MCP23017_IODIRB);  // IODIRB register
+  Wire.write(0x00);             // set all of port B to outputs
+  Wire.endTransmission();
+  Serial.println("i2c chip0 done");
+
+
+
+
+
+
+  Serial.println("i2c done");
+
+  pinMode(39, INPUT);
+  attachInterrupt(digitalPinToInterrupt(39), extInt5, FALLING);
+  pinMode(38, INPUT);
+  attachInterrupt(digitalPinToInterrupt(38), extInt4, FALLING);
+  pinMode(27, INPUT);
+  attachInterrupt(digitalPinToInterrupt(27), extInt3, FALLING);
+  pinMode(26, INPUT);
+  attachInterrupt(digitalPinToInterrupt(26), extInt2, FALLING);
+  pinMode(25, INPUT);
+  attachInterrupt(digitalPinToInterrupt(25), extInt1, FALLING);
+  pinMode(24, INPUT);
+  attachInterrupt(digitalPinToInterrupt(24), extInt0, FALLING);
+
+  pinMode(led, OUTPUT);
+  lcd.begin(numCols, numRows);
+  lcd.print("Hello there");
+
+  lcd2.begin(numCols, numRows);
+  lcd2.print("Hello there lcd2");
+
+  lcd3.begin(numCols, numRows);
+  lcd3.print("Hello there lcd3");
+
+  SynthBuddy* s = SynthBuddy::getInstance();
+  s->addDisplay(&lcd);
+  s->addDisplay(&lcd2);
+  s->addDisplay(&lcd3);
+  s->configEncBoard(MCP_LB2);
+  s->configEncBoard(MCP_LB3);
+  s->configEncBoard(MCP_LB4);
+  z.init();
+
+  z.showOSC1();
+
+
+  z.getCurrPatch();
+}
+
+
+
+
+int prevtime;
+int foo;
+
+void loop() {
+
+  auto s = SynthBuddy::getInstance();
+
+  if (int5) {
+    while (digitalRead(39) == 0) {
+      //Serial.print(digitalRead(39));
+      uint16_t v = s->readEncBoard(MCP_LB2);
+      int5 = false;
+      s->encupdate(5, v & 0x0001, v & 0x0002);
+      s->encupdate(4, v & 0x0004, v & 0x0008);
+      s->encupdate(3, v & 0x0010, v & 0x0020);
+      s->encupdate(2, v & 0x0040, v & 0x0080);
+      s->encupdate(1, v & 0x2000, v & 0x1000);
+      s->encupdate(0, v & 0x8000, v & 0x4000);
+
+      if (v == 0x600) s->button(0);
+      if (v == 0x500) s->button(1);
+      if (v == 0x400) s->button(2);
+      if (v == 0x300) s->button(3);
+      if (v == 0x200) s->button(4);
+      if (v == 0x100) s->button(5);
+      //Serial.print(digitalRead(39));
+      //Serial.println(v,HEX);
+    }
+  }
+
+  if (int4) {
+    while (digitalRead(38) == 0) {
+      //Serial.print(digitalRead(39));
+      uint16_t v = s->readEncBoard(MCP_LB3);
+      int4 = false;
+      s->encupdate(11, v & 0x0001, v & 0x0002);
+      s->encupdate(10, v & 0x0004, v & 0x0008);
+      s->encupdate(9, v & 0x0010, v & 0x0020);
+      s->encupdate(8, v & 0x0040, v & 0x0080);
+      s->encupdate(7, v & 0x2000, v & 0x1000);
+      s->encupdate(6, v & 0x8000, v & 0x4000);
+
+      if (v == 0x600) s->button(6);
+      if (v == 0x500) s->button(7);
+      if (v == 0x400) s->button(8);
+      if (v == 0x300) s->button(9);
+      if (v == 0x200) s->button(10);
+      if (v == 0x100) s->button(11);
+
+      //Serial.print(digitalRead(39));
+      //Serial.println(v,HEX);
+    }
+  }
+
+  if (int3) {
+    while (digitalRead(27) == 0) {
+      //Serial.print(digitalRead(39));
+      uint16_t v = s->readEncBoard(MCP_LB4);
+      int3 = false;
+      s->encupdate(17, v & 0x0001, v & 0x0002);
+      s->encupdate(16, v & 0x0004, v & 0x0008);
+      s->encupdate(15, v & 0x0010, v & 0x0020);
+      s->encupdate(14, v & 0x0040, v & 0x0080);
+      s->encupdate(13, v & 0x2000, v & 0x1000);
+      s->encupdate(12, v & 0x8000, v & 0x4000);
+
+      if (v == 0x600) s->button(12);
+      if (v == 0x500) s->button(13);
+      if (v == 0x400) s->button(14);
+      if (v == 0x300) s->button(15);
+      if (v == 0x200) s->button(16);
+      if (v == 0x100) s->button(17);
+      //Serial.print(digitalRead(39));
+      //Serial.println(v,HEX);
+    }
+  }
+
+
+  if (S10.update()) {
+    if (S10.fallingEdge()) {
+      Serial.println("S10");
+    }
+  }
+  if (S11.update()) {
+    if (S11.fallingEdge()) {
+      Serial.println("S11");
+      z.toggleMod();
+    }
+  }
+
+  if (SI0.update() || SI1.update() || SI2.update() || SI3.update()) {
+    if (SI0.fallingEdge() || SI1.fallingEdge() || SI2.fallingEdge() || SI3.fallingEdge()) {
+      int v = digitalRead(7) | (digitalRead(8) << 1) | (digitalRead(28) << 2) | (digitalRead(29) << 3);
+      if (millis() - prevtime > 150) {
+        prevtime = millis();
+        Serial.printf("button %d\r\n", v);
+        switch (v) {
+          case 9:  //1001
+            //z.setEditState(editState::OSC1);
+            z.showOSC1();
+            break;
+          case 8:  //1000
+            z.showOSC2();
+            //z.setEditState(editState::OSC2);
+            break;
+          case 10:  //1010
+            //z.setEditState(editState::OSCBOTH);
+            z.showSubOsc();
+            break;
+          case 7:  //0111
+            //z.setEditState(editState::FILT);
+            z.showFilt();
+            break;
+          case 14:  //1110
+            //z.setEditState(editState::FX);
+            z.showFx();
+            break;
+          case 13:  //1101
+            //z.setEditState(editState::EG);
+            z.showEG();
+            break;
+          case 12:  //1100
+            //z.setEditState(editState::LFO);
+            z.showLFO();
+            break;
+          case 6:
+            z.nextUnisonMode();
+            break;
+          case 11:  //1011
+            z.nextMainMode();
+            break;
+
+          default:
+            break;
+        }
+      }
+    }
+  }
+
+  pot0 = (int)(110.0 - (110.0) * (((double)analogRead(A6) + (double)analogRead(A6) + (double)analogRead(A6)) / (1023.0 * 3.0)));
+  pot1 = (int)(110.0 - (110.0) * (((double)analogRead(A7) + (double)analogRead(A7) + (double)analogRead(A7)) / (1023.0 * 3.0)));
+  pot2 = (int)(110.0 - (110.0) * (((double)analogRead(A8) + (double)analogRead(A8) + (double)analogRead(A8)) / (1023.0 * 3.0)));
+
+  if (pot0 < 5) pot0 = 0;
+  else pot0 = pot0 - 5;
+  if (pot1 < 5) pot1 = 0;
+  else pot1 = pot1 - 5;
+  if (pot2 < 5) pot2 = 0;
+  else pot2 = pot2 - 5;
+  if (pot0 > 99) pot0 = 99;
+  if (pot1 > 99) pot1 = 99;
+  if (pot2 > 99) pot2 = 99;
+
+  //z.process();
+
+  if (pot0 != pot0_o) {
+    Serial.printf("pot0 %d\n", pot0);
+    pot0_o = pot0;
+  }
+  if (pot1 != pot1_o) {
+    Serial.printf("pot1 %d\n", pot1);
+    sendcc(0, 5, pot1);
+    pot1_o = pot1;
+  }
+  if (pot2 != pot2_o) {
+    Serial.printf("pot2 %d\n", pot2);
+    z.sendZ1ProgParm(1, 0, 27, pot2);
+    pot2_o = pot2;
+  }
+
+
+  processDIN();
+  processUSB();
+}

@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# debug logs written by the Max for Live devices
+*-debug.log
+
+# Z1 Buddy: build output and compiled tools
+Z1Buddy/build_z1buddy/
+Z1Buddy/tools/z1sysex
+Z1Buddy/tools/z1send
+__pycache__/

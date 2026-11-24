@@ -1,0 +1,117 @@
+#!/bin/sh
+# buddy - build, flash and watch the Z1 Buddy firmware from the command line.
+#
+#   tools/buddy build      compile firmware/ ; the image goes to build_z1buddy/
+#   tools/buddy flash      compile, then upload to the Z1 Buddy
+#   tools/buddy monitor    show the Buddy's debug output, with times; keeps
+#                          running and reconnects when the Buddy restarts
+#   tools/buddy go         flash, then monitor
+#   tools/buddy port       show which connected Teensy is the Z1 Buddy
+#
+# The Buddy is found by its USB serial number, never by its position: several
+# Teensys are usually connected and their USB locations change.
+# Settings can be overridden from the environment, e.g. BUDDY_SERIAL=... tools/buddy flash
+
+BUDDY_SERIAL="${BUDDY_SERIAL:-13124960}"
+# opt=osstd  "Smallest Code": nothing else fits in the fast RAM
+# speed=720  a mild overclock (600 is standard); 816 also runs without cooling
+FQBN="${BUDDY_FQBN:-teensy:avr:teensy41:usb=serialmidi,opt=osstd,speed=720}"
+CLI="${ARDUINO_CLI:-$HOME/bin/arduino-cli}"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SKETCH="$ROOT/firmware"
+OUT="$ROOT/build_z1buddy"
+WORK="$OUT/work"
+LOG="$OUT/monitor.log"
+SERIAL_DEV="/dev/cu.usbmodem${BUDDY_SERIAL}1"
+
+die() { echo "buddy: $*" >&2; exit 1; }
+
+[ -x "$CLI" ] || die "arduino-cli not found at $CLI"
+
+# Prints the upload port (usb:...) of the Teensy with our serial number.
+upload_port() {
+  "$CLI" board list --format json 2>/dev/null | python3 -c '
+import json, sys
+serial = sys.argv[1]
+data = json.load(sys.stdin)
+ports = data.get("detected_ports", []) if isinstance(data, dict) else data
+for p in ports:
+    port = p.get("port", {})
+    if port.get("protocol") != "teensy":
+        continue
+    # the Teensy loader reports the serial number without its last digit
+    if serial.startswith(str(port.get("properties", {}).get("serialNumber", "?"))) or serial in str(port.get("label", "")):
+        print(port.get("address"))
+        break
+' "$BUDDY_SERIAL"
+}
+
+build() {
+  mkdir -p "$WORK"
+  echo "building $SKETCH"
+  "$CLI" compile -b "$FQBN" --build-path "$WORK" "$SKETCH" > "$OUT/build.log" 2>&1 || {
+    grep -E "error|Error" "$OUT/build.log" | sed "s|$SKETCH/||" >&2
+    die "build failed; full output in $OUT/build.log"
+  }
+  grep -E "FLASH|RAM1" "$OUT/build.log"
+  cp "$WORK/firmware.ino.hex" "$OUT/firmware.ino.hex"
+  echo "image: $OUT/firmware.ino.hex"
+}
+
+flash() {
+  build
+  port="$(upload_port)"
+  [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found; is the Buddy connected?"
+  echo "uploading to the Z1 Buddy at $port"
+  "$CLI" upload -b "$FQBN" -p "$port" --protocol teensy --input-dir "$WORK" || die "upload failed"
+  echo "flashed"
+}
+
+monitor() {
+  echo "monitoring $SERIAL_DEV (Ctrl-C to stop); also written to $LOG"
+  trap 'echo; exit 0' INT TERM
+  waiting=0
+  while :; do
+    if [ ! -e "$SERIAL_DEV" ]; then
+      [ "$waiting" = 0 ] && say "--- waiting for the Buddy ---"
+      waiting=1
+      sleep 0.3
+      continue
+    fi
+    waiting=0
+    # USB serial ignores the speed; raw mode keeps the terminal driver out of it.
+    stty -f "$SERIAL_DEV" raw 115200 2>/dev/null
+    # Read the port directly in this shell, line by line, so nothing is held
+    # back in a buffer and no helper process is left behind. The read fails
+    # when the Buddy restarts (a flash, a reset); then we wait for it again.
+    if exec 3< "$SERIAL_DEV"; then
+      say "--- connected $(date '+%Y-%m-%d %H:%M:%S') ---"
+      cr="$(printf '\r')"
+      while IFS= read -r line <&3; do
+        say "$(date '+%H:%M:%S')  ${line%"$cr"}"
+      done
+      exec 3<&-
+    fi
+    sleep 0.3
+  done
+}
+
+# Prints a line and adds it to the log.
+say() {
+  printf '%s\n' "$1"
+  printf '%s\n' "$1" >> "$LOG"
+}
+
+case "$1" in
+  build) build ;;
+  flash) flash ;;
+  monitor) monitor ;;
+  go) flash && monitor ;;
+  port)
+    port="$(upload_port)"
+    [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found"
+    echo "Z1 Buddy: upload port $port, debug output $SERIAL_DEV"
+    ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
