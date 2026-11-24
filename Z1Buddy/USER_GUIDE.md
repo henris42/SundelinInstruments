@@ -225,8 +225,6 @@ What to know:
 
 - **MIDI clock from the Z1 is not passed to the computer.** Start, stop and
   continue are.
-- **Pitch bend in Normal mode** may not reach the Z1 from the computer in this
-  version; it is being looked into.
 - **In Normal mode everything from the computer is sent to the Z1 on channel 1,**
   whatever channel it arrived on.
 - **The Dump button** is for saving a sound on the computer: the Z1 sends the sound

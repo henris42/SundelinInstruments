@@ -35,5 +35,9 @@ How many saws you get:
 In MPE mode the Buddy's Multi setup adds a multitap delay for all voices, timed
 for 136 BPM (see `../multi_info.py`).
 
-A JP-8000 supersaw is 7 saws, so unison 2 or 3 is the closest match. The Buddy's
+A JP-8000 supersaw is 7 saws, so unison 2 or 3 is the closest match.
+
+The mod wheel adds vibrato (LFO 1 on the pitch of all three oscillators). Pitch
+bend is 24 semitones up and down, the most the Z1 allows, so that MPE bends have
+room; change parameters 163 and 164 in `make_supersaw.py` for a normal wheel. The Buddy's
 Detune pot is the supersaw "detune" control; a little Wonkiness keeps it moving.

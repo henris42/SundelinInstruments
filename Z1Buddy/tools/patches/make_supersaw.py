@@ -7,7 +7,10 @@ the insert effects off). Sending it turns whatever sound is selected on the Z1
 into the patch; nothing is stored until you write it on the Z1 or enter MPE
 mode on the Buddy.
 
-    python3 make_supersaw.py [path to korg_z1_v1.0_midi.txt]
+    python3 make_supersaw.py [path to korg_z1_v1.0_midi.txt [ids]]
+        ids: a comma-separated list of parameter IDs; then only those are
+        written, to supersaw_part.syx, for adding to a sound that is on the
+        Z1 already without undoing what was changed there by ear
     ../z1send "Z1 Buddy" supersaw.syx
 
 How it gets close to a supersaw
@@ -25,6 +28,8 @@ DOC = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
     "~/Documents/SundelinInstruments/docs/korg_z1_v1.0_midi.txt")
 O1, O2 = 0x800, 0x1000           # ExID of the OSC1 and OSC2 type-specific parameters
 AFTERTOUCH = 19                  # "AfterT" in the Z1's modulation source list 1
+LFO1 = 6                         # "LFO1" in the same list
+MOD_WHEEL = 20                   # "MWheel"
 
 
 def doc_parameters():
@@ -103,6 +108,21 @@ def build():
     put(208, 50)
     put(215, 0)       # sub oscillator wave: saw
 
+    # 3b. Vibrato from the mod wheel: LFO 1 modulates the pitch of all three
+    #     oscillators, by nothing at rest and by VIBRATO at full wheel.
+    VIBRATO = 14
+    put(107, 0)       # LFO 1 wave: triangle
+    put(108, 0)       # key sync off: it runs freely
+    put(109, 150)     # frequency, of 0-199 (the scale in Hz is not documented)
+    put(114, 0)       # no fade in
+    put(117, 0)       # offset
+    put(118, 0)       # MIDI sync off
+    for base in (182, 196, 209):       # pitch modulation 1 of OSC1, OSC2, sub oscillator
+        put(base, LFO1)                # source
+        put(base + 1, 0)               # fixed amount: none
+        put(base + 2, MOD_WHEEL)       # the amount is controlled by the mod wheel
+        put(base + 3, VIBRATO)         # by this much at full wheel
+
     # 4. Mixer: everything into filter 1, the centre saw a little louder
     put(224, 75); put(227, 0)     # OSC1 to out 1 / out 2
     put(230, 75); put(233, 0)     # OSC2
@@ -141,16 +161,21 @@ def build():
     put(356, 18)      # effect send: a little of whatever the master effect is
 
     out = bytearray()
+    only = set(int(a) for a in sys.argv[2].split(",")) if len(sys.argv) > 2 else None   # for sending a few parameters only
     for pid in sorted(values):
+        if only is not None and pid not in only:
+            continue
         v = values[pid] & 0x3FFF               # 14-bit two's complement
         out += bytes([0xF0, 0x42, 0x30, 0x46, 0x41, 0x01,
                       pid & 0x7F, (pid >> 7) & 0x7F, v & 0x7F, (v >> 7) & 0x7F, 0xF7])
-    out += bytes([0xB0, 94, 0, 0xB0, 95, 0])   # insert effects 1 and 2 off
+    if only is None:
+        out += bytes([0xB0, 94, 0, 0xB0, 95, 0])   # insert effects 1 and 2 off
     return out, len(values)
 
 
 if __name__ == "__main__":
     data, count = build()
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supersaw.syx")
+    name = "supersaw.syx" if len(sys.argv) <= 2 else "supersaw_part.syx"
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
     open(path, "wb").write(data)
     print("%s: %d parameter changes, %d bytes" % (os.path.basename(path), count, len(data)))

@@ -196,8 +196,9 @@ What happens depends on the main mode.
   change that follows it.
 - Other controllers, poly pressure and channel pressure go through the
   [scheduler](#the-scheduler).
-- Pitch bend appears not to be sent at all in this mode; see
-  [Open questions](#open-questions).
+- Pitch bend goes through the [scheduler](#the-scheduler) on channel 1. (Before
+  24 November 2026 it was never sent in this mode: a bend on channel 1 was filed
+  as the MPE global offset.)
 
 **MPE modes.** Channels are kept. See [The MPE extension](#the-mpe-extension).
 
@@ -449,8 +450,10 @@ the controller number held in the Buddy setting `C74To` (key 10001, default 7,
 which is Volume on the Z1). This is the Buddy's own equivalent of the MPE remapper
 in Live.
 
-**Global pitch bend.** A bend on channel 1 only changes the stored offset. The
-voices move when their own bend next changes; they are not re-sent at that moment.
+**Global pitch bend.** A bend on channel 1 is added to every note channel's own
+bend, and all six are sent again at once, so a pitch wheel moves every sounding
+note. (Until 24 November 2026 it only changed a stored offset, which took effect
+when a note's own bend next moved.)
 
 ### The scheduler
 
@@ -815,17 +818,14 @@ the hardware or an answer from the author.
    hold what look like factory setups. Cause unknown.
 3. **Leaving MPE.** Going back to Normal changes the Buddy's state only. Nothing
    restores the Z1's voice assign mode or leaves the Multi setup.
-4. **Pitch bend in Normal mode.** Messages are forced to channel 1, and
-   `markPB()` treats channel 1 as the global offset and sends nothing. As written,
-   pitch bend from the computer never reaches the Z1 in Normal mode. To be tested.
-5. **Dump mode** (S10) ends when the arpeggio dump the Buddy asks for arrives. If
+4. **Dump mode** (S10) ends when the arpeggio dump the Buddy asks for arrives. If
    that 298-byte message is lost, dump mode stays on and incoming programs are no
    longer parsed until restart.
-6. **Hard-coded Korg channel.** All requests use global channel 1 (`30h`).
-7. **Do program parameter changes reach the MPE timbres?** In MPE mode the six
+5. **Hard-coded Korg channel.** All requests use global channel 1 (`30h`).
+6. **Do program parameter changes reach the MPE timbres?** In MPE mode the six
    timbres play A127. The drift and the editor both send program parameter changes;
    whether the Z1 applies them to what the timbres are playing is not known here.
-8. **The CC 74 target can not be changed.** The setting `C74To` (key 10001) exists
+7. **The CC 74 target can not be changed.** The setting `C74To` (key 10001) exists
    but is not placed on any display page, so CC 74 always goes to controller 7.
 
 Settled:
@@ -835,6 +835,7 @@ Settled:
 - **Parameter 21 = 0** is correct: parameter 21 is Voice Assign Mode, 0 = MONO_MULTI
   (Korg program parameter list).
 - **Unison button and pot A8** had swapped arguments; fixed with the unison work.
+- **Pitch bend in Normal mode** was never sent to the Z1; fixed.
 - **Parameter table audit (24 November 2026).** All 784 parameter definitions in
   `Z1.cpp` were checked by script: each one's key against the slot it is stored in,
   and its range against the Korg program parameter list. Five wrong keys were fixed

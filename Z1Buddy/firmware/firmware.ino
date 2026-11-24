@@ -546,18 +546,36 @@ static inline void markChPress(uint8_t ch, uint8_t val) {
   pendChPress[ch - 1] = val;
   dirtyChPress[ch - 1] = true;
 }
+// Pitch bend.
+// Normal mode: everything is on channel 1 and a bend is simply the bend.
+// MPE mode: a bend on a note channel is that note's own; a bend on channel 1
+// is for all notes and is added to each of them, at once, so the pitch wheel
+// moves every sounding note and not only the ones that bend next.
+static uint16_t rawPB[16] = { 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192,
+                              8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192 };   // each note channel's own bend
+
+static inline void setChannelPB(uint8_t c) {   // c = 0..15
+  int32_t summed = (int32_t)rawPB[c] + (int32_t)globalPB - 8192;
+  if (summed < 0) summed = 0;
+  if (summed > 16383) summed = 16383;
+  pendPB[c] = (uint16_t)summed;
+  dirtyPB[c] = true;
+}
+
 static inline void markPB(uint8_t ch, uint16_t v14) {
   if (ch < 1 || ch > 16) return;
-  if (ch == 1) {
-    // Save as global offset, don’t send directly
-    globalPB = v14;
-  } else {
-    // Apply global offset and clamp
-    int32_t summed = (int32_t)v14 + (int32_t)globalPB - 8192;
-    if (summed < 0) summed = 0;
-    if (summed > 16383) summed = 16383;
-    pendPB[ch - 1] = (uint16_t)summed;
+  if (Z1Edit::getInstance()->getMainState() == mainState::NORMAL) {
+    pendPB[ch - 1] = v14;
     dirtyPB[ch - 1] = true;
+    return;
+  }
+  if (ch == 1) {
+    globalPB = v14;
+    uint8_t last = (MPE_MAX_CHANNEL < 2) ? 1 : (MPE_MAX_CHANNEL > 16 ? 16 : MPE_MAX_CHANNEL);
+    for (uint8_t c = 1; c < last; ++c) setChannelPB(c);
+  } else {
+    rawPB[ch - 1] = v14;
+    setChannelPB(ch - 1);
   }
 }
 

@@ -9,7 +9,7 @@ s = open('../../firmware/firmware.ino', newline='').read().replace('\r', '')
 a = s.index("struct WonkSpec {"); b = s.index("// MPE voice range")
 c = s.index("// ============ MPE unison ============"); d = s.index("// ============ Pots ============")
 open('block.inc', 'w').write(s[a:b] + s[c:d])
-t0 = s.index("struct TxEvent {"); t1 = s.index("};", t0) + 3
+t0 = s.index("struct TxEvent {"); t1 = s.index("};", s.index("struct DebugStats {")) + 3
 q0 = s.index("static constexpr int TX_WATERMARK"); q1 = s.index("void sendcc(")
 open('txblock.inc', 'w').write(s[t0:t1] + s[q0:q1])
 d = open('../../firmware/SynthBuddy.cpp', newline='').read().replace('\r', '')
