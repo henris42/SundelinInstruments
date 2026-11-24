@@ -111,11 +111,14 @@ struct WonkTarget {
 #define REFRESH_MS_CHPR 60
 #define REFRESH_MS_PB 40
 
-// Priority pacing (coarse, still respected)
-#define THROTTLE_PB_MS 2
-#define THROTTLE_CC_MS 5
-#define THROTTLE_POLY_MS 6
-#define THROTTLE_CHPR_MS 6
+// Priority pacing: the shortest time between two messages of one kind. Besides
+// the cable, the Z1's own processor is the limit: it is slow, and its panel gets
+// sluggish when it is fed more than it needs. At most about 330 pitch bends, 125
+// controllers, 100 channel pressures and 80 poly pressures a second.
+#define THROTTLE_PB_MS 3
+#define THROTTLE_CC_MS 8
+#define THROTTLE_POLY_MS 12
+#define THROTTLE_CHPR_MS 10
 
 // ---------------- Link/Budget Model ----------------
 // MIDI 31,250 bps ~ 3125 bytes/s ~ 3.125 bytes/ms
@@ -296,6 +299,7 @@ static uint8_t noteIn[16][128];
 static uint8_t noteOut[16][128];
 
 static DebugStats dbgStats;
+static int notesSounding = 0;        // notes that are on at the Z1 right now
 
 static inline void noteCount(uint8_t table[16][128], uint8_t status, uint8_t note, uint8_t vel) {
   uint8_t c = status & 0x0F, type = status & 0xF0;
@@ -303,8 +307,9 @@ static inline void noteCount(uint8_t table[16][128], uint8_t status, uint8_t not
   note &= 0x7F;
   if (type == 0x90 && vel > 0) {
     if (table[c][note] < 255) table[c][note]++;
-    if (in) dbgStats.noteOnIn++; else dbgStats.noteOnOut++;
+    if (in) dbgStats.noteOnIn++; else { dbgStats.noteOnOut++; notesSounding++; }
   } else if (type == 0x80 || type == 0x90) {
+    if (!in && table[c][note] > 0 && notesSounding > 0) notesSounding--;
     if (table[c][note] > 0) table[c][note]--;
     if (in) dbgStats.noteOffIn++; else dbgStats.noteOffOut++;
   }
@@ -1212,7 +1217,8 @@ static void bgTick(uint32_t now, bool turn) {
 // ---- Wonkiness (pot A6): see the block further down ----
 static constexpr int WONK_PITCH_MAX = 50;    // Random Pitch Intensity at full pot (Z1 range 0-99)
 static constexpr int WONK_DETUNE_MAX = 12;   // offset of each timbre at full pot, cents (MPE mode)
-static constexpr int WONK_STEP_MS = 150;     // how often the drift moves
+static constexpr int WONK_IDLE_MS = 4000;    // after the last note, the drift goes on this long
+static constexpr int WONK_STEP_MS = 300;     // how often the drift moves one parameter
 static int wonkAmount = 0;                 // 0..99 from the pot
 static float wonkVoice[MPE_TIMBRES];       // fixed offset of each timbre, -1..1
 
@@ -1384,7 +1390,7 @@ static constexpr WonkSpec WONK_BY_TYPE[13][WONK_PER_TYPE] = {
 };
 
 static constexpr int WONK_MAX_TARGETS = (5 + 2 * WONK_PER_TYPE);
-static constexpr int WONK_PER_STEP = 3;      // parameters moved per step, to keep the DIN link free
+static constexpr int WONK_PER_STEP = 1;      // parameters moved per step: the Z1's processor is slow, every message costs it time
 
 static constexpr int WONK_UNSENT = -10000;
 
@@ -1518,6 +1524,9 @@ static void wonkTick(uint32_t now) {
   }
   if (wonkAmount == 0 || now < wonkNextAt) return;
   wonkNextAt = now + WONK_STEP_MS;
+  // Nothing drifts while nothing sounds: with no note on and none for a few
+  // seconds (the releases have died away) the Z1 is left in peace.
+  if (notesSounding == 0 && now - lastNoteEventAt > WONK_IDLE_MS) return;
   // An oscillator type was changed in the editor: other parameters matter now.
   if (wonkOscType(0) != wonkBuiltFor[0] || wonkOscType(1) != wonkBuiltFor[1]) wonkBuild();
   for (int n = 0; n < WONK_PER_STEP && wonkCount > 0; ++n) {
@@ -1766,6 +1775,7 @@ static void buddyPanic() {
   // (the note-offs above are counted again when they are written; that is
   // harmless, the count does not go below zero)
   for (int c = 0; c < 16; ++c) txEvent3((uint8_t)(0xB0 | c), 123, 0);
+  notesSounding = 0;
   Serial.println("panic: all notes off");
 }
 

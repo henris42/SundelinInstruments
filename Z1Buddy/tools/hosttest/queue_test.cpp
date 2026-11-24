@@ -12,7 +12,7 @@ struct EditableValue { int v; int getIval() { return v; } }; std::map<int, Edita
 struct Z1Edit { static Z1Edit* getInstance() { static Z1Edit z; return &z; } bool inMPE() { return true; } void getCurrPatch() {}
   void sendZ1ProgParm(uint8_t ch, uint8_t grp, int param, int val) { char t[40]; snprintf(t, 40, "[g%d p%d=%d] ", grp, param, val); out += t; } };
 static long random(long a, long b) { return a + rand() % (b - a); } static void randomSeed(unsigned) {} static unsigned micros() { return 1; } static uint32_t millis() { return now_ms; }
-static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int txInFlight() { return 96 - txRoom; }
+static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int notesSounding = 1; /* a note is held, so the drift runs */ static int txInFlight() { return 96 - txRoom; }
 static void txFlushExpression(uint8_t) {}
 static void txEvent3(uint8_t a, uint8_t b, uint8_t c) { Serial1.write(a); Serial1.write(b); Serial1.write(c); }
 #include "block.inc"

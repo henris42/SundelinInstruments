@@ -20,7 +20,7 @@ struct Z1Edit { static Z1Edit* getInstance() { static Z1Edit z; return &z; }
     if (grp == 1) { nsent[param]++; if (!lo.count(param) || val < lo[param]) lo[param] = val; if (!hi.count(param) || val > hi[param]) hi[param] = val; } } };
 static long random(long a, long b) { return a + rand() % (b - a); }
 static void randomSeed(unsigned) {} static unsigned micros() { return 1; } static uint32_t millis() { return now_ms; }
-static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int txInFlight() { return 96 - txRoom; }
+static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int notesSounding = 1; /* a note is held, so the drift runs */ static int txInFlight() { return 96 - txRoom; }
 static void txFlushExpression(uint8_t) {}
 static void txEvent3(uint8_t a, uint8_t b, uint8_t c) { Serial1.write(a); Serial1.write(b); Serial1.write(c); }
 #include "block.inc"
@@ -54,4 +54,11 @@ int main() {
   wonkProgramLoaded(); run(100); out.clear(); wonkPot(0); bgFlush(); back = true; for (int i = 0; i < wonkCount; i++) if (wonkTargets[i].sent != WONK_UNSENT) back = false;
   check("pot to 0: all back at the patch values", back && out.find("p30=0") != std::string::npos);
   run(50); check("and stays quiet", out.empty());
+  // nothing drifts while nothing sounds
+  wonkPot(99); wonkProgramLoaded(); run(20); out.clear(); notesSounding = 0; lastNoteEventAt = now_ms; run(20);
+  check("drift goes on for a few seconds after the last note", !out.empty());
+  run(40); out.clear(); run(200);
+  check("then stops while nothing sounds", out.empty());
+  notesSounding = 1; run(20);
+  check("and starts again with the next note", !out.empty());
   printf(fails ? "%d FAILED\n" : "all passed\n", fails); return fails; }

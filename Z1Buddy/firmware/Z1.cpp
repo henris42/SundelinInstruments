@@ -1983,7 +1983,16 @@ void Z1Edit::showFxRotary() {
 }
 
 void Z1Edit::sendZ1ProgParm(uint8_t channel, uint8_t group, int param, int val) {
-  Serial.print("sendZ1ProgParm ");
+  // One readable line for the monitor: which parameter, by name where the
+  // editor knows it, and its value.
+  if (group == 1) {
+    int i = z1ParamIndex(param);
+    int ex = param >> 11, id = param & 0x7FF;
+    static const char* const block[6] = { "", "OSC1 ", "OSC2 ", "FX1 ", "FX2 ", "master FX " };
+    Serial.printf("-> Z1 program %s%d (%s) = %d\r\n", ex < 6 ? block[ex] : "", id, i >= 0 ? Z1_PARAMS[i].name : "?", val);
+  } else {
+    Serial.printf("-> Z1 %s %d = %d\r\n", group == 3 ? "multi" : group == 0 ? "global" : "pattern", param, val);
+  }
   uint8_t plsb, pmsb, vlsb, vmsb;
   plsb = param & 0x7f;
   pmsb = (param >> 7) & 0x7f;
@@ -2001,12 +2010,7 @@ void Z1Edit::sendZ1ProgParm(uint8_t channel, uint8_t group, int param, int val) 
   d[8] = vlsb;
   d[9] = vmsb;
   d[10] = 0xf7;
-
-  for (int i = 0; i < 11; i++) {
-    Serial.printf("%02x ", d[i]);
-    z1Write(d[i]);
-  }
-  Serial.println("");
+  z1Write(d, 11);
 }
 
 void Z1Edit::getCurrPatch() {

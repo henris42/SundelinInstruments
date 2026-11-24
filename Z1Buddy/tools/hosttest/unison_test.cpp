@@ -13,7 +13,7 @@ struct Z1Edit { static Z1Edit* getInstance() { static Z1Edit z; return &z; } boo
 static long random(long a, long b) { return a; } static void randomSeed(unsigned) {} static unsigned micros() { return 1; } static uint32_t millis() { return 0; }
 #include <map>
 struct EditableValue { int v; int getIval() { return v; } }; std::map<int, EditableValue*> editables;
-static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int txInFlight() { return 96 - txRoom; }
+static std::deque<int> txEv, txSx; static bool txInSysEx = false; static int notesSounding = 1; /* a note is held, so the drift runs */ static int txInFlight() { return 96 - txRoom; }
 static void txFlushExpression(uint8_t) {}
 static void txEvent3(uint8_t a, uint8_t b, uint8_t c) { Serial1.write(a); Serial1.write(b); Serial1.write(c); }
 #include "block.inc"
