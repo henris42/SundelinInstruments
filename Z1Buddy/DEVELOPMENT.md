@@ -1,7 +1,10 @@
 # Z1 Buddy: development notes
 
 How the Z1 Buddy firmware is built and how it works inside. For how to use the
-Buddy, see the [user guide](USER_GUIDE.md).
+Buddy, see the [user guide](USER_GUIDE.md). What the Buddy does with each MIDI
+message is defined in [MIDI_IMPLEMENTATION.md](MIDI_IMPLEMENTATION.md); this
+document explains how the firmware does it, and where the two disagree that
+document is the reference.
 
 The Z1 Buddy is a hardware front end for the Korg Z1: a Teensy 4.1 with three LCDs,
 18 encoders and a USB MIDI port. It sits between the computer and the Z1 and is an
@@ -453,9 +456,10 @@ which is Volume on the Z1). This is the Buddy's own equivalent of the MPE remapp
 in Live.
 
 **Per-note pitch bend** arrives in MPE scale, where full travel means 48
-semitones (`MPE_BEND_SEMITONES`). The Z1 plays a bend in the scale of the sound,
+semitones unless the controller announces another range with RPN 0 on a note
+channel (`mpeRpn()`, `mpeBendSemitones`). The Z1 plays a bend in the scale of the sound,
 whose range is program parameters 163 (up) and 164 (down), usually 2 semitones.
-The Buddy multiplies the bend by 48 ÷ range (`mpeScaleBend()`), so a key bent a
+The Buddy multiplies the bend by that range ÷ the sound's range (`mpeScaleBend()`), so a key bent a
 semitone sounds a semitone higher whatever the sound's range, and a small range
 gets the Z1's full bend resolution. What does not fit the range is held at its
 end. The range is read from the program dump (bytes 145 and 146) and follows

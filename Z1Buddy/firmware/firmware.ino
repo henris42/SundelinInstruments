@@ -562,7 +562,11 @@ static uint16_t rawPB[16] = { 8192, 8192, 8192, 8192, 8192, 8192, 8192, 8192,
 // semitone higher, whatever the range of the sound, and with a small range
 // the bend gets the Z1's full resolution. What does not fit the range is
 // held at its end. A sound whose range is 0 or reversed is left unscaled.
-static constexpr int MPE_BEND_SEMITONES = 48;
+// 48 is what MPE prescribes unless the controller says otherwise; it says so
+// with registered parameter 0 (pitch bend sensitivity) on a note channel,
+// which the Buddy follows (mpeRpn).
+static int mpeBendSemitones = 48;
+static int mpeBendCents = 0;          // the fraction of a semitone on top, 0-99 (RPN 0 "fine")
 // How much of that true pitch a key's bend gets, in percent. 100: a key bent
 // a semitone sounds a semitone higher. Lower makes the keys less sensitive to
 // sideways movement. Set with Buddy sysex 07 (tools/buddy bend <percent>);
@@ -577,7 +581,8 @@ static inline int32_t mpeScaleBend(int32_t offset) {   // offset from the centre
     if (editables.count(164)) range = -editables[164]->getIval();
   }
   if (range <= 0) return offset;
-  int32_t scaled = offset * MPE_BEND_SEMITONES / range * mpeBendPercent / 100;
+  // in cents, so a range such as 81.92 semitones (one cent per step) is exact
+  int32_t scaled = (int32_t)((int64_t)offset * (mpeBendSemitones * 100 + mpeBendCents) / (range * 100) * mpeBendPercent / 100);
   if (scaled > 8191) scaled = 8191;
   if (scaled < -8192) scaled = -8192;
   return scaled;
@@ -589,6 +594,41 @@ static inline void setChannelPB(uint8_t c) {   // c = 0..15
   if (summed > 16383) summed = 16383;
   pendPB[c] = (uint16_t)summed;
   dirtyPB[c] = true;
+}
+
+// Registered parameter 0, "pitch bend sensitivity", on a note channel: how
+// many semitones the controller means by a full bend of a key. MPE fixes it
+// at 48 unless the controller sends this. The three controllers that make up
+// the message (101, 100, then 6) are taken here and not passed to the Z1,
+// which has no registered parameters. Returns true if cc was one of them.
+static uint8_t mpeRpnMsb[16], mpeRpnLsb[16];
+static bool mpeRpnInit = false;
+
+static bool mpeRpn(uint8_t ch, uint8_t cc, uint8_t val) {   // ch 2..16
+  if (!mpeRpnInit) {
+    for (int i = 0; i < 16; ++i) mpeRpnMsb[i] = mpeRpnLsb[i] = 127;   // 127/127 = none selected
+    mpeRpnInit = true;
+  }
+  uint8_t c = ch - 1;
+  if (cc == 101) { mpeRpnMsb[c] = val; return true; }
+  if (cc == 100) { mpeRpnLsb[c] = val; return true; }
+  bool bendRange = mpeRpnMsb[c] == 0 && mpeRpnLsb[c] == 0;
+  if (cc == 6 && bendRange) {                 // semitones; the cents start again at 0
+    if (val >= 1 && val <= 96) {
+      mpeBendSemitones = val;
+      mpeBendCents = 0;
+      Serial.printf("MPE: a full key bend is %d semitones\r\n", val);
+    }
+    return true;
+  }
+  if (cc == 38 && bendRange) {                // cents on top
+    if (val <= 99) {
+      mpeBendCents = val;
+      Serial.printf("MPE: a full key bend is %d.%02d semitones\r\n", mpeBendSemitones, val);
+    }
+    return true;
+  }
+  return false;
 }
 
 static inline void markPB(uint8_t ch, uint16_t v14) {
@@ -2098,6 +2138,7 @@ void processUSB() {
           {
             onMPE_CC(ch, d1, d2);
             Serial.printf("CC %d %d %d\r\n", ch, d1, d2);
+            if (ch >= 2 && mpeRpn(ch, d1, d2)) break;   // the controller stating its bend range
             if (d1 == 74) d1 = editables[10001]->getIval();
             if (ch == 1) {
               uint8_t last = (MPE_MAX_CHANNEL < 2) ? 1 : (MPE_MAX_CHANNEL > 16 ? 16 : MPE_MAX_CHANNEL);

@@ -8,6 +8,7 @@ controller.
 | Document | For | Contents |
 | --- | --- | --- |
 | [USER_GUIDE.md](USER_GUIDE.md) | Anyone playing the Z1 with the Buddy | Connecting it, the controls, editing sounds, unison, MPE mode, wonkiness |
+| [MIDI_IMPLEMENTATION.md](MIDI_IMPLEMENTATION.md) | Anyone connecting a controller or software | What the Buddy does with every MIDI message: modes, MPE, pitch bend of a key, what is thinned, system exclusive, the Buddy's own messages |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Anyone changing the firmware | Building and flashing, hardware pins, code map, MIDI bridge, MPE scheduler, open questions |
 
 Quick start for firmware work: `tools/buddy go` builds, flashes and opens the debug
