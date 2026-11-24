@@ -7,6 +7,7 @@
 //#include <iomanip>
 //#include <sstream>
 //#include "EventManager.h"
+#include <EEPROM.h>
 #include <deque>
 #include <vector>
 #include <Bounce.h>
@@ -569,8 +570,8 @@ static int mpeBendSemitones = 48;
 static int mpeBendCents = 0;          // the fraction of a semitone on top, 0-99 (RPN 0 "fine")
 // How much of that true pitch a key's bend gets, in percent. 100: a key bent
 // a semitone sounds a semitone higher. Lower makes the keys less sensitive to
-// sideways movement. Set with Buddy sysex 07 (tools/buddy bend <percent>);
-// back at the value below after power-up.
+// sideways movement. Set with Buddy sysex 07 (tools/buddy bend <percent>)
+// and kept when the Buddy is switched off.
 static int mpeBendPercent = 100;
 
 static inline int32_t mpeScaleBend(int32_t offset) {   // offset from the centre, -8192..8191
@@ -596,6 +597,25 @@ static inline void setChannelPB(uint8_t c) {   // c = 0..15
   dirtyPB[c] = true;
 }
 
+// The key bend range and depth are settings of the Buddy and are kept when it
+// is switched off (four bytes of the Teensy's EEPROM, from address 0).
+static constexpr uint8_t BEND_SETTINGS_MAGIC = 0xB5;
+
+static void bendSettingsSave() {
+  EEPROM.update(0, BEND_SETTINGS_MAGIC);
+  EEPROM.update(1, (uint8_t)mpeBendSemitones);
+  EEPROM.update(2, (uint8_t)mpeBendCents);
+  EEPROM.update(3, (uint8_t)mpeBendPercent);
+}
+
+static void bendSettingsLoad() {
+  if (EEPROM.read(0) != BEND_SETTINGS_MAGIC) return;
+  uint8_t st = EEPROM.read(1), ct = EEPROM.read(2), pc = EEPROM.read(3);
+  if (st >= 1 && st <= 96) mpeBendSemitones = st;
+  if (ct <= 99) mpeBendCents = ct;
+  if (pc <= 127) mpeBendPercent = pc;
+}
+
 // Registered parameter 0, "pitch bend sensitivity", on a note channel: how
 // many semitones the controller means by a full bend of a key. MPE fixes it
 // at 48 unless the controller sends this. The three controllers that make up
@@ -617,6 +637,7 @@ static bool mpeRpn(uint8_t ch, uint8_t cc, uint8_t val) {   // ch 2..16
     if (val >= 1 && val <= 96) {
       mpeBendSemitones = val;
       mpeBendCents = 0;
+      bendSettingsSave();
       Serial.printf("MPE: a full key bend is %d semitones\r\n", val);
     }
     return true;
@@ -624,6 +645,7 @@ static bool mpeRpn(uint8_t ch, uint8_t cc, uint8_t val) {   // ch 2..16
   if (cc == 38 && bendRange) {                // cents on top
     if (val <= 99) {
       mpeBendCents = val;
+      bendSettingsSave();
       Serial.printf("MPE: a full key bend is %d.%02d semitones\r\n", mpeBendSemitones, val);
     }
     return true;
@@ -1594,7 +1616,8 @@ static void potSet(int i, int v) {
 //     08 ss cc            what the controller means by a full bend of a key:
 //                         ss semitones (1-96) and cc cents (0-99). The same as
 //                         RPN 0 on a note channel, for a controller that does
-//                         not announce its range itself. 48 00 after power-up.
+//                         not set it itself. Kept when switched off; 48 00
+//                         on a new Buddy.
 //   from the Buddy:
 //     11 mm uu ww bb pp pt dt   status, sent when asked and whenever it changes
 //        mm  0 Normal, 1 entering MPE (waiting for the Z1), 2 MPE
@@ -1760,12 +1783,14 @@ static bool buddyHandle(const uint8_t* data, uint16_t length) {
       if (length >= 7 && data[5] >= 1 && data[5] <= 96) {
         mpeBendSemitones = data[5];
         mpeBendCents = (length >= 8 && data[6] <= 99) ? data[6] : 0;
+        bendSettingsSave();
         Serial.printf("MPE: a full key bend is %d.%02d semitones (set by Buddy message)\r\n", mpeBendSemitones, mpeBendCents);
       }
       break;
     case 0x07:
       if (length >= 7) {
         mpeBendPercent = data[5];
+        bendSettingsSave();
         Serial.printf("MPE bend depth %d %%\r\n", mpeBendPercent);
       }
       break;
@@ -2254,6 +2279,7 @@ void setup() {
   usbMIDI.setHandleSysEx(handleUSB_SysEx);
 
   dumpmode = false;
+  bendSettingsLoad();
 
 
 

@@ -80,7 +80,7 @@ The Buddy is an MPE receiver with one zone:
 | Channel pressure | Sent on channel 1 | Channel pressure for that voice; thinned |
 | Poly pressure | Sent on channel 1 | Sent on that channel; thinned |
 | Program change | Sent | Sent |
-| RPN 0 (CC 101, 100, then 6 and 38) | Passed on as controllers | Sets the range of a key's bend; not passed on |
+| RPN 0 (CC 101, 100, then 6 and 38) | Passed on as controllers | Sets the Buddy's key bend range; not passed on |
 
 **CC 74** is sent to the Z1 as controller 7 (volume). The Z1 has no fixed timbre
 controller; the number is a setting in the firmware (`C74To`) that has no control
@@ -98,47 +98,40 @@ room.
 
 *New.*
 
+MIDI has no way for two devices to agree on a bend range: each side has a setting,
+and they have to be set the same. The Buddy's side is this:
+
 | | |
 | --- | --- |
-| Range of the incoming bend | 48 semitones at full travel, as MPE prescribes. A sender that uses another range says so with RPN 0 on a note channel: CC 101 = 0, CC 100 = 0, then CC 6 = semitones (1–96) and optionally CC 38 = cents (0–99). The Buddy follows it. |
+| Range of the incoming bend | A setting of the Buddy: what a full bend of a key means, in semitones and cents. **48 semitones** on a new Buddy, the value MPE prescribes. Set the controller's own pitch bend range to the same value. |
+| Changing it | Buddy message `08` (`tools/buddy bendrange`), or the standard MIDI way: RPN 0 on a note channel (CC 101 = 0, CC 100 = 0, CC 6 = semitones, CC 38 = cents). Kept when the Buddy is switched off. |
 | Result on the Z1 | True pitch: a key bent by a semitone sounds a semitone higher. |
 | Limit | The pitch bend range of the sound on the Z1 (its "PB Intensity", normally 2 semitones). A bend beyond that stays at the limit. |
-| Depth | 100 % of true pitch after power-up. Can be reduced or raised with Buddy message `07`. |
+| Depth | 100 % of true pitch, adjustable with Buddy message `07`; also kept. |
 
 The Z1 plays a pitch bend in the scale of the sound: a full bend is the sound's
 bend range. So the Buddy multiplies a key's bend by
 
-    incoming range ÷ range of the sound × depth
+    range of the incoming bend ÷ range of the sound × depth
 
 For the standard case that is 48 ÷ 2 = 24.
 
 **Resolution.** Pitch bend is a 14-bit value, 8,192 steps each way.
 
-| Stage | Range | One step is |
-| --- | --- | --- |
-| From the controller, standard MPE | ±48 semitones | 0.59 cent |
-| From a sender that announces ±81.92 semitones | ±8,192 cents | exactly 1 cent |
-| From a sender that announces ±2 semitones | ±2 semitones | 0.024 cent |
-| To the Z1, sound with range ±2 | ±2 semitones | 0.024 cent |
-| To the Z1, sound with range ±1 | ±1 semitone | 0.012 cent |
+| Range set on controller and Buddy | One step is |
+| --- | --- |
+| 48 semitones (standard MPE) | 0.59 cent |
+| 81 semitones 92 cents | exactly 1 cent |
+| 12 semitones | 0.15 cent |
+| 2 semitones | 0.024 cent |
 
-So with a standard MPE controller the limit is the controller's side, 0.59 cent
-per step; the Buddy's output is 24 times finer than that, and nothing is gained by
-giving the sound a smaller bend range.
-
-The range is the sender's choice, not the Buddy's. Software in front of the Buddy
-that scales the bend itself can pick whatever suits it and announce it:
-
-- **81 semitones 92 cents** makes one step exactly one cent, which is easy to
-  reason about.
-- **A narrow range such as 2 semitones** gives the finest pitch, for a controller
-  whose keys only ever bend a semitone or so.
-
-Without an announcement the Buddy assumes 48, so a standard MPE controller works
-unchanged. The Osmose does not announce its range; if it is set to something other
-than 48, tell the Buddy with Buddy message `08` (`tools/buddy bendrange`). When
-the Osmose is played through Live, what counts is the range Live uses for its MPE
-output, 48 unless changed.
+What the Buddy sends on to the Z1 is finer than any of these needs: with a sound
+whose bend range is 2 semitones, one step to the Z1 is 0.024 cent. So the choice of
+range decides the resolution, and it is made on the controller: a controller whose
+keys only ever bend a semitone or so gets the finest pitch from a narrow range.
+The Osmose does not send its range; it has to be set by hand on both sides. When
+it is played through Live, what counts is the range Live uses for its MPE output,
+48 unless changed.
 
 How finely the Z1 itself follows a pitch bend is not stated in Korg's documents.
 They say only that it sends and receives pitch bend as the full 14 bits, and that
@@ -214,8 +207,8 @@ aside for private use; `5A 31` is "Z1".
 | To the Buddy | `04 ww pt dt` | Set the three pots: wonkiness, portamento time, detune, 0–99; `7F` leaves one as it is. Holds until the pot itself is moved. |
 | To the Buddy | `05` | Send the debug status |
 | To the Buddy | `06` | Panic: all notes off |
-| To the Buddy | `07 pp` | Depth of a key's bend in MPE mode, percent of true pitch, 0–127 |
-| To the Buddy | `08 ss cc` | Range of the incoming key bend, `ss` semitones (1–96) and `cc` cents (0–99): the same as RPN 0 on a note channel, for a controller that does not announce its range. 48 00 after power-up. |
+| To the Buddy | `07 pp` | Depth of a key's bend in MPE mode, percent of true pitch, 0–127. Kept when switched off. |
+| To the Buddy | `08 ss cc` | Range of the incoming key bend: `ss` semitones (1–96) and `cc` cents (0–99). Kept when switched off; 48 00 on a new Buddy. |
 | From the Buddy | `11 mm uu ww bb pp pt dt` | Status; sent when asked for and when it changes |
 | From the Buddy | `12 …` | Debug status |
 

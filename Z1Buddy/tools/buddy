@@ -13,10 +13,11 @@
 #   tools/buddy bendrange S [C]
 #                          MPE mode: tell the Buddy what the controller means
 #                          by a full bend of a key, S semitones and C cents
-#                          (the Osmose does not announce it; standard is 48)
+#                          (set the controller to the same; standard is 48).
+#                          The Buddy keeps it.
 #   tools/buddy bend N     MPE mode: how much a key's sideways bend does, in
 #                          percent of true pitch (100 = a semitone of bend is
-#                          a semitone); until the Buddy is switched off
+#                          a semitone); the Buddy keeps it
 #
 # The Buddy is found by its USB serial number, never by its position: several
 # Teensys are usually connected and their USB locations change.
@@ -156,5 +157,5 @@ case "$1" in
     [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found"
     echo "Z1 Buddy: upload port $port, debug output $SERIAL_DEV"
     ;;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

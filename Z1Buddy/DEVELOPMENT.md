@@ -468,8 +468,8 @@ parameter changes; a sound whose range is 0 or reversed is left unscaled.
 
 How much of that true pitch a key gets is `mpeBendPercent`, 100 by default. It
 can be changed while playing with `tools/buddy bend <percent>` (Buddy sysex 07)
-to find what feels right on a given controller; the value is not kept over a
-power cycle, so the one that works should become the default in the code.
+to find what feels right on a given controller. It and the incoming bend range
+are kept in the Teensy's EEPROM (four bytes from address 0).
 
 **Global pitch bend.** A bend on channel 1 is added, unscaled, to every note
 channel's bend, and all six are sent again at once: a pitch wheel moves every
