@@ -1,11 +1,11 @@
 #include "SynthBuddy.h"
+#include <cstdio>
+#include <cstring>
 #include <Arduino.h>
 #include "Editable.h"
 #include <i2c_driver.h>
 #include <i2c_driver_wire.h>
 //#include <Wire.h>
-#include <iomanip>
-#include <sstream>
 #define R_START 0x0
 #define DIR_NONE 0x0
 // Clockwise step.
@@ -61,22 +61,27 @@ const unsigned char ttable[7][4] = {
 };
 #endif
 
-static const std::vector<int> displayWidth{7,7,7,6,7,6};
-static const std::vector<int> displayStart{0,7,14,21,27,34};
+// The six fields of one display: where each starts and how wide it is.
+static constexpr int displayWidth[6] = { 7, 7, 7, 6, 7, 6 };
+static constexpr int displayStart[6] = { 0, 7, 14, 21, 27, 34 };
+
+// Centres s in a field w characters wide: half the spare room in front, the
+// rest behind. A text longer than the field is written in full, as before.
+static void center(const char* s, int w, char* out, size_t outLen) {
+  if (outLen == 0) return;
+  int len = (int)strlen(s);
+  int pad = w - len;
+  int left = pad > 0 ? pad / 2 : 0;
+  int right = pad > 0 ? pad - left : 0;
+  size_t n = 0;
+  for (int i = 0; i < left && n + 1 < outLen; ++i) out[n++] = ' ';
+  for (int i = 0; i < len && n + 1 < outLen; ++i) out[n++] = s[i];
+  for (int i = 0; i < right && n + 1 < outLen; ++i) out[n++] = ' ';
+  out[n] = 0;
+}
 
 SynthBuddy *SynthBuddy::instance = nullptr;
 uint8_t SynthBuddy::state[30];
-
-std::string center(const std::string s, const int w) {
-    std::stringstream ss, spaces;
-    int pad = w - s.size();                  // count excess room to pad
-    for(int i=0; i<pad/2; ++i)
-        spaces << " ";
-    ss << spaces.str() << s << spaces.str(); // format with padding
-    if(pad>0 && pad%2!=0)                    // if pad odd #, add 1 more space
-        ss << " ";
-    return ss.str();
-}
 
 SynthBuddy::SynthBuddy() {
         ledstate=0;
@@ -95,36 +100,36 @@ void SynthBuddy::addDisplay(LiquidCrystal* d) {
     lcds.push_back(d);
 }
 
-void SynthBuddy::label(int pos, string v) {
+void SynthBuddy::label(int pos, const char* v) {
     int p=pos/6;
     auto l=lcds[p];
     int mPos=pos-6*p;
-    //l->setCursor(int(6.0*mPos+0.8*mPos),0);
+    char text[48];
+    center(v, displayWidth[mPos], text, sizeof text);
     l->setCursor(displayStart[mPos],0);
-    l->print(center(v,displayWidth[mPos]).c_str());
+    l->print(text);
 }
 
 void SynthBuddy::value(int pos, int v) {
-    std::stringstream ss;
-    ss<<v;
-    value(pos,ss.str());
+    char text[16];
+    snprintf(text, sizeof text, "%d", v);
+    value(pos, text);
 }
 
 void SynthBuddy::value(int pos, float v) {
-    std::stringstream ss;
-    ss<<v;
-    value(pos,ss.str());
+    char text[24];
+    snprintf(text, sizeof text, "%g", (double)v);
+    value(pos, text);
 }
 
-void SynthBuddy::value(int pos, string v) {
+void SynthBuddy::value(int pos, const char* v) {
     int p=pos/6;
     auto l=lcds[p];
     int mPos=pos-6*p;
-    //l->setCursor(int(6.0*mPos+0.8*mPos),1);
+    char text[48];
+    center(v, displayWidth[mPos], text, sizeof text);
     l->setCursor(displayStart[mPos],1);
-    //auto s = center(v,displayWidth[mPos]).c_str();
-    //Serial.printf("value %s\r\n",s);
-    l->print(center(v,displayWidth[mPos]).c_str());
+    l->print(text);
 }
 
 void SynthBuddy::clear(int pos) {

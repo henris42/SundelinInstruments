@@ -1,7 +1,6 @@
 #pragma once
-#include <Arduino.h>  // before "using namespace std" below, or byte clashes with std::byte
+#include <Arduino.h>
 #include <vector>
-#include <string>
 #include <functional>
 #include <LiquidCrystal.h>
 #include "Editable.h"
@@ -46,7 +45,6 @@
 #define MCP23017_INT_ERR 255
 #define SCREENPARMS 18
 
-using namespace std;
 
 
 
@@ -57,8 +55,8 @@ public:
 
     void addDisplay(LiquidCrystal* d);
 
-    void label(int pos, string v);
-    void value(int pos, string v);
+    void label(int pos, const char* v);
+    void value(int pos, const char* v);
     void value(int pos, int v);
     void value(int pos, float v);
     void clear(int pos);
@@ -90,7 +88,7 @@ private:
     //unsigned char state;
     //unsigned char inverter;
     
-    vector<LiquidCrystal*> lcds;
+    std::vector<LiquidCrystal*> lcds;
     int ledstate;
     std::function<void()>buttonFunc[SCREENPARMS];
 

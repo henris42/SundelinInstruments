@@ -1,29 +1,25 @@
 #pragma once
-#include <cstdint>  // uint8_t
-#include <string>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
-#include <map>
-//#include <any>
-#include <vector>
-//#include <Arduino.h>
 
-//using namespace std;
+#include "z1_params.h"
 
-
-enum class editableType {
-  Integer,
-  Float,
-  TextEnum,
-  None
-};
-
-
+// One parameter of the editor: its current value and how it is shown. What
+// the parameter is (key, name, range, list of names) comes from the constant
+// table in z1_params.h; only what changes while the Buddy runs lives here.
 class EditableValue {
 public:
-  EditableValue(int key, std::string name, int min, int max, int def, editableType t, const std::vector<std::string> & svals=std::vector<std::string>());
+  // Called when the value was changed with an encoder.
+  using ChangeFunc = std::function<void(int key, editableType t, int iVal, float fVal, const char* sVal)>;
+  // Writes the value as text for the display into out.
+  using FormatFunc = void (*)(int iVal, int prec, float p1, float p2, float p3, float p4, char* out, size_t outLen);
+
+  EditableValue() = default;
+  void bind(const ParamDef* def);
 
   static void updateState(bool s) {
-      ustate=s;
+    ustate = s;
   };
   void show(int pos);
   void update();
@@ -34,66 +30,86 @@ public:
   void dec();
   void button();
   bool isSigned();
-  void setMinMax(int min, int max, int def=0);
-  bool isInverted(){return inverted;};
-  static void subscribeDefault(std::function<void(int key, editableType t, int iVal, float fVal, std::string sVal)> f) {
-    defaultFunc=f;
+  void setMinMax(int min, int max, int def = 0);
+  bool isInverted() {
+    return inverted;
   };
-  void setEnabled(bool e){
-    enabled=e;
+  static void subscribeDefault(ChangeFunc f) {
+    defaultFunc = f;
+  };
+  void setEnabled(bool e) {
+    enabled = e;
   };
 
-  void subscribe(std::function<void(int key, editableType t, int iVal, float fVal, std::string sVal)> f) {
-    changeFunc=f;
+  void subscribe(ChangeFunc f) {
+    changeFunc = f;
   };
-  void setUpdateFunc(std::function<std::string(int iVal, int prec, float p1, float p2, float p3, float p4)> f, int p, float f1=0.0, float f2=1.0, float f3=1.0, float f4=0.0) {
-    updateFunc=f;
-    fpar1=f1;
-    fpar2=f2;
-    fpar3=f3;
-    fpar4=f4;
-    mprec=p;
-   
+  void setUpdateFunc(FormatFunc f, int p, float f1 = 0.0, float f2 = 1.0, float f3 = 1.0, float f4 = 0.0) {
+    updateFunc = f;
+    fpar1 = f1;
+    fpar2 = f2;
+    fpar3 = f3;
+    fpar4 = f4;
+    mprec = p;
   };
-    
+
   int getIval() {
     return mIVal;
   };
 
   void hide() {
-    visible=false;
+    visible = false;
   }
-  
+
+  const ParamDef* def() const {
+    return mDef;
+  }
+
 private:
-   int mKey;
-  std::string mName;
-  int mAddr;
-  int mPos;
+  const char* listText() const;   // the name for the current value of a list parameter
+  void changed();
+
+  const ParamDef* mDef = nullptr;
+  int mKey = 0;
+  int mPos = 0;
   static bool ustate;
-  editableType mType;
-  int mIVal;
-  int mIMax;
-  int mIMin;
-  float mFVal;
-  float mFincr;
-  std::string mSVal;
-  std::vector<std::string>mSVals;
-  bool inverted;
-  bool enabled;
-  bool visible;
-  std::function<void(int key, editableType t, int iVal, float fVal, std::string sVal)> changeFunc;
-  static std::function<void(int key, editableType t, int iVal, float fVal, std::string sVal)> defaultFunc;
-  std::function<void(int btn)>btnFunc;
-  //std::function<std::string(int iVal)>updateFunc;
-  std::function<std::string(int iVal,int prec, float p1, float p2, float p3, float p4)>updateFunc;
-  int mprec;
-  float fpar1,fpar2,fpar3,fpar4;
-  //
-  
+  editableType mType = editableType::None;
+  int mIVal = 0;
+  int mIMax = 0;
+  int mIMin = 0;
+  float mFVal = 0.0f;
+  float mFincr = 0.1f;
+  bool inverted = false;
+  bool enabled = true;
+  bool visible = true;
+  ChangeFunc changeFunc;
+  static ChangeFunc defaultFunc;
+  void (*btnFunc)(int btn) = nullptr;
+  FormatFunc updateFunc = nullptr;
+  int mprec = 0;
+  float fpar1 = 0.0f, fpar2 = 1.0f, fpar3 = 1.0f, fpar4 = 0.0f;
+};
 
+// All parameters, found by key: editables[263]->set(60).
+// A key that is not in the table gives nullptr; count() tells without that.
+class EditableSet {
+public:
+  void init();                               // once, at start-up
+  EditableValue* operator[](int key) const;
+  size_t count(int key) const {
+    return z1ParamIndex(key) >= 0 ? 1 : 0;
+  }
+  EditableValue* begin() const {
+    return values;
+  }
+  EditableValue* end() const {
+    return values + (values ? Z1_PARAM_COUNT : 0);
+  }
 
+private:
+  EditableValue* values = nullptr;
 };
 
 void hideAll();
 
-extern std::map<int,EditableValue*> editables;
+extern EditableSet editables;

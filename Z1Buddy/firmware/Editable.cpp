@@ -2,125 +2,118 @@
 
 #include "SynthBuddy.h"
 
-//#include <string>
-#include <sstream>
+EditableSet editables;
+EditableValue::ChangeFunc EditableValue::defaultFunc;
+bool EditableValue::ustate = true;
 
-DMAMEM std::map<int,EditableValue*> editables;
-std::function<void(int key, editableType t, int iVal, float fVal, std::string sVal)> EditableValue::defaultFunc;
+// ---------------------------------------------------------------- the set
 
-EditableValue::EditableValue(int key, std::string name, int min, int max, int def, editableType t, const std::vector<std::string> & svals) {
-    mKey=key;
-    mName=name;
-    mAddr=key;
-    mPos=0;
-    mType=t;
-    mIVal=def;
-    mFVal=0.0;
-    mFincr=0.1;
-    mSVal="null";
-    //editables[mKey]=this;
-    mSVals=svals;
-    enabled=true;
-    ustate=true;
+void EditableSet::init() {
+  if (values) return;
+  values = new EditableValue[Z1_PARAM_COUNT];   // on the heap: the large memory, not the fast one
+  for (size_t i = 0; i < Z1_PARAM_COUNT; ++i) values[i].bind(&Z1_PARAMS[i]);
+}
 
-    inverted=false;
-    visible=true;
-    changeFunc=nullptr;
-    btnFunc=nullptr;
-    updateFunc=nullptr;
-    setMinMax(min, max, def);
-    
-    
-  }
+EditableValue* EditableSet::operator[](int key) const {
+  int i = z1ParamIndex(key);
+  return (i >= 0 && values) ? &values[i] : nullptr;
+}
+
+void hideAll() {
+  for (auto& value : editables) value.hide();
+}
+
+// ---------------------------------------------------------------- one value
+
+void EditableValue::bind(const ParamDef* def) {
+  mDef = def;
+  mKey = def->key;
+  mType = def->type;
+  setMinMax(def->min, def->max, def->def);
+}
 
 void EditableValue::setMinMax(int min, int max, int def) {
-  mIVal=def;
-  if(min<max) {
-    inverted=false;
-    mIMin=min;
-    mIMax=max;  
+  mIVal = def;
+  if (min < max) {
+    inverted = false;
+    mIMin = min;
+    mIMax = max;
   } else {
-    inverted=true;
-    mIMax=min;
-    mIMin=max;
+    inverted = true;
+    mIMax = min;
+    mIMin = max;
   }
 }
 
-void EditableValue::button(){
-  if(btnFunc)btnFunc(mPos);
+const char* EditableValue::listText() const {
+  const ParamList* l = mDef ? mDef->list : nullptr;
+  if (!l || mIVal < 0 || mIVal >= (int)l->count) return "";
+  return l->items[mIVal];
+}
+
+void EditableValue::button() {
+  if (btnFunc) btnFunc(mPos);
+}
+
+// The value was changed with the encoder: tell whoever listens, then redraw.
+void EditableValue::changed() {
+  const char* text = (mType == editableType::TextEnum) ? listText() : "null";
+  if (changeFunc) {
+    changeFunc(mKey, mType, mIVal, mFVal, text);
+  } else {
+    if (defaultFunc) defaultFunc(mKey, mType, mIVal, mFVal, text);
+  }
+  update();
 }
 
 void EditableValue::inc() {
-  if(enabled){
-    switch(mType) {
-      case editableType::Integer:
-        if(mIVal<mIMax)mIVal++;
-        break;
-      case editableType::Float:
-        mFVal=mFVal+mFincr;
-        
-        break;
-      case editableType::TextEnum:
-        mIVal++;
-        //if(mIVal>=mSVals.size())mIVal=mSVals.size()-1;
-        if(mIVal>mIMax)mIVal=mIMax;
-        mSVal=mSVals[mIVal];
-        break;
-      case editableType::None:
-        break;
-    }
-    if(changeFunc) {
-      changeFunc(mKey, mType, mIVal, mFVal, mSVal);
-    } else {
-      if(defaultFunc)defaultFunc(mKey, mType, mIVal, mFVal, mSVal);
-    }
-    update();
+  if (!enabled) return;
+  switch (mType) {
+    case editableType::Integer:
+      if (mIVal < mIMax) mIVal++;
+      break;
+    case editableType::Float:
+      mFVal = mFVal + mFincr;
+      break;
+    case editableType::TextEnum:
+      mIVal++;
+      if (mIVal > mIMax) mIVal = mIMax;
+      break;
+    case editableType::None:
+      break;
   }
+  changed();
 }
-
 
 void EditableValue::dec() {
-  if(enabled){
-    switch(mType) {
-      case editableType::Integer:
-        if(mIVal>mIMin)mIVal--;
-        break;
-      case editableType::Float:
-        mFVal=mFVal-mFincr;
-        
-        break;
-      case editableType::TextEnum:
-        mIVal--;
-        if(mIVal<0)mIVal=0;
-        mSVal=mSVals[mIVal];
-        break;
-      case editableType::None:
-        break;
-    }
-    if(changeFunc) {
-      changeFunc(mKey, mType, mIVal, mFVal, mSVal);
-    } else {
-      if(defaultFunc)defaultFunc(mKey, mType, mIVal, mFVal, mSVal);
-    }
-    update();
+  if (!enabled) return;
+  switch (mType) {
+    case editableType::Integer:
+      if (mIVal > mIMin) mIVal--;
+      break;
+    case editableType::Float:
+      mFVal = mFVal - mFincr;
+      break;
+    case editableType::TextEnum:
+      mIVal--;
+      if (mIVal < 0) mIVal = 0;
+      break;
+    case editableType::None:
+      break;
   }
+  changed();
 }
 
-bool EditableValue::ustate;
-
 void EditableValue::show(int pos) {
-    auto s = SynthBuddy::getInstance();
-    mPos=pos;
-    visible=true;
-    //stringstream ss;
-    if(mType!=editableType::None)
-        s->label(pos,mName);
-    else s->label(pos,"      ");
-    s->currentEditable[pos]=this;
+  auto s = SynthBuddy::getInstance();
+  mPos = pos;
+  visible = true;
+  if (mType != editableType::None)
+    s->label(pos, mDef ? mDef->name : "");
+  else s->label(pos, "      ");
+  s->currentEditable[pos] = this;
 
-    update();
-
-
+  update();
 }
 
 int EditableValue::get() {
@@ -128,56 +121,45 @@ int EditableValue::get() {
 }
 
 bool EditableValue::isSigned() {
-  if(mIMin<0)return true;
+  if (mIMin < 0) return true;
   else return false;
 }
 
+// A byte from a program dump: signed parameters are stored as two's complement.
 void EditableValue::set(uint8_t v) {
-  //Serial.printf("set %d to %d\n",mKey,mIVal);
-  if(isSigned()) {
-    int8_t tmp=(int8_t)v;
-    mIVal=(int)tmp;
-  }
-    else mIVal=(int)v;
-  if(ustate)update();
+  if (isSigned()) {
+    int8_t tmp = (int8_t)v;
+    mIVal = (int)tmp;
+  } else mIVal = (int)v;
+  if (ustate) update();
 }
 
 void EditableValue::set(int v) {
-  //Serial.printf("set %d to %d\n",mKey,mIVal);
-  mIVal=v;
-  if(ustate)update();
+  mIVal = v;
+  if (ustate) update();
 }
 
 void EditableValue::update() {
-    auto s = SynthBuddy::getInstance();
-    //Serial.printf("%d %f %f %f %f\n",mIVal,fpar1,fpar2,fpar3,fpar4);
-    if(visible) {
-    if(updateFunc) {
-       s->value(mPos,updateFunc(mIVal,mprec,fpar1,fpar2,fpar3,fpar4));
-      return; 
-    } 
-    stringstream ss;
-    
-    switch(mType) {
-      case editableType::Integer:
-        ss<<mIVal;
-        s->value(mPos,ss.str());
-        break;
-      case editableType::Float:
-        ss<<mFVal;
-         s->value(mPos,ss.str());
-        break;
-      case editableType::TextEnum:
-         s->value(mPos,mSVals[mIVal]);
-        break;
-      case editableType::None:
-         s->value(mPos,"      ");
-        break;
-    }
-    }
-
-}
-
-void hideAll() {
-   for (const auto & [key, value] : editables) value->hide();
+  if (!visible) return;
+  auto s = SynthBuddy::getInstance();
+  if (updateFunc) {
+    char text[24];
+    updateFunc(mIVal, mprec, fpar1, fpar2, fpar3, fpar4, text, sizeof text);
+    s->value(mPos, text);
+    return;
+  }
+  switch (mType) {
+    case editableType::Integer:
+      s->value(mPos, mIVal);
+      break;
+    case editableType::Float:
+      s->value(mPos, mFVal);
+      break;
+    case editableType::TextEnum:
+      s->value(mPos, listText());
+      break;
+    case editableType::None:
+      s->value(mPos, "      ");
+      break;
+  }
 }

@@ -13,9 +13,10 @@
 # Settings can be overridden from the environment, e.g. BUDDY_SERIAL=... tools/buddy flash
 
 BUDDY_SERIAL="${BUDDY_SERIAL:-13124960}"
-# opt=osstd  "Smallest Code": nothing else fits in the fast RAM
+# opt=o2std  "Faster", the Teensy's normal setting (osstd, "Smallest Code", was
+#            needed until the editor stopped using strings and string streams)
 # speed=720  a mild overclock (600 is standard); 816 also runs without cooling
-FQBN="${BUDDY_FQBN:-teensy:avr:teensy41:usb=serialmidi,opt=osstd,speed=720}"
+FQBN="${BUDDY_FQBN:-teensy:avr:teensy41:usb=serialmidi,opt=o2std,speed=720}"
 CLI="${ARDUINO_CLI:-$HOME/bin/arduino-cli}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

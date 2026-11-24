@@ -2,7 +2,6 @@
 #include "SynthBuddy.h"
 #include "Editable.h"
 #include <vector>
-#include <string>
 
 class z1Patch {
 public:
