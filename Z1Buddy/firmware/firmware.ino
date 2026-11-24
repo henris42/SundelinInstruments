@@ -1070,6 +1070,7 @@ static void drainUSBCoalescedToDIN() {
 
 // ============ App hooks ============
 static void wonkProgramLoaded();   // further down, with the rest of the wonkiness
+void mpeDetuneForget();            // further down, with the MPE unison
 
 void onSysEx(const uint8_t* data, size_t length, bool fromUSB) {
 #if USE_DEBUG
@@ -1099,6 +1100,7 @@ void onSysEx(const uint8_t* data, size_t length, bool fromUSB) {
         // six channels; it answers "load completed" or an error.
         Serial.println(" Z1 in Multi mode, sending the MPE multi setup");
         txSysEx(mpe_multi_syx, mpe_multi_syx_len);
+        mpeDetuneForget();
         z->setMainState(mainState::MPEPRE3);
       } else if (z->getMainState() == mainState::NORMAL) {
         // Back in Program mode (or the mode was changed on the Z1): read the
@@ -1305,6 +1307,18 @@ static void mpeUnisonNoteOff(uint8_t inCh, uint8_t note, uint8_t vel) {
 
 // Detune of each timbre: Multi parameter 21, 27 apart per timbre, -50..+50
 // cents. Within a group the timbres are spread evenly from -cents to +cents.
+// What each timbre's detune was last set to, so that only the ones that
+// change are sent. "Not known" after the Multi setup has been loaded afresh.
+static constexpr int MPE_DETUNE_UNKNOWN = -1000;
+static int mpeDetuneSent[MPE_TIMBRES] = { MPE_DETUNE_UNKNOWN, MPE_DETUNE_UNKNOWN, MPE_DETUNE_UNKNOWN,
+                                          MPE_DETUNE_UNKNOWN, MPE_DETUNE_UNKNOWN, MPE_DETUNE_UNKNOWN };
+
+// The Multi setup was just loaded into the Z1: its timbres have the detune
+// the setup gives them, which is 0.
+void mpeDetuneForget() {
+  for (int t = 0; t < MPE_TIMBRES; ++t) mpeDetuneSent[t] = 0;
+}
+
 static void mpeSendDetune() {
   for (int t = 0; t < MPE_TIMBRES; ++t) {
     int cents = 0;
@@ -1316,6 +1330,8 @@ static void mpeSendDetune() {
     cents += (int)lroundf(wonkVoice[t] * WONK_DETUNE_MAX * wonkAmount / 99.0f);
     if (cents > 50) cents = 50;
     if (cents < -50) cents = -50;
+    if (cents == mpeDetuneSent[t]) continue;       // nothing to tell the Z1
+    mpeDetuneSent[t] = cents;
     bgSend(3, 21 + 27 * t, cents);                 // group 3 = Multi
   }
 }

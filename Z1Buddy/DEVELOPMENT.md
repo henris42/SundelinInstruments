@@ -665,7 +665,8 @@ parameter change).
 | 6 | −d, −0.6d, −0.2d, +0.2d, +0.6d, +d |
 
 **Changing the setting** releases all held notes, sends All Notes Off on channels
-2–7 and sends the six detunes again. Leaving MPE mode does the same and sets the
+2–7 and sends the detunes that change. A timbre whose detune stays the same is
+not sent again, here or when the pot is turned. Leaving MPE mode does the same and sets the
 detunes back to 0.
 
 The Z1 program's own unison is not touched in MPE mode.

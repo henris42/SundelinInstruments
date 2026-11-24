@@ -30,7 +30,7 @@ int main() {
   mpeUnisonNoteOff(9, 60, 0); expect("note-off of the stolen note is ignored", "");
   mpeUnisonNoteOff(12, 64, 0); expect("note off", "84 40 00 85 40 00 86 40 00 ");
   mpeUnisonNoteOn(5, 72, 70); expect("new input channel takes the free group", "94 48 46 95 48 46 96 48 46 ");
-  mpeUnisonChanged(6); expect("switch to 6: releases, all notes off, detune", "81 43 00 82 43 00 83 43 00 84 48 00 85 48 00 86 48 00 b1 7b 00 b2 7b 00 b3 7b 00 b4 7b 00 b5 7b 00 b6 7b 00 [g3 p21=-20] [g3 p48=-12] [g3 p75=-4] [g3 p102=4] [g3 p129=12] [g3 p156=20] ");
+  mpeUnisonChanged(6); expect("switch to 6: releases, all notes off, only the changed detunes", "81 43 00 82 43 00 83 43 00 84 48 00 85 48 00 86 48 00 b1 7b 00 b2 7b 00 b3 7b 00 b4 7b 00 b5 7b 00 b6 7b 00 [g3 p48=-12] [g3 p75=-4] [g3 p102=4] [g3 p129=12] ");   // the outer voices keep -20 and +20: not sent again
   mpeUnisonNoteOn(2, 60, 100); expect("6 voices", "91 3c 64 92 3c 64 93 3c 64 94 3c 64 95 3c 64 96 3c 64 ");
   mpeDetunePot(99); out.erase(0, 0); expect("pot full -> 50 cents", "[g3 p21=-50] [g3 p48=-30] [g3 p75=-10] [g3 p102=10] [g3 p129=30] [g3 p156=50] ");
   mpeUnisonChanged(1); out.erase(0, out.find('['));
