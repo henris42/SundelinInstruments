@@ -174,7 +174,10 @@ The main loop has no blocking waits apart from serial writes:
 4. `processDIN()`: parse what the Z1 sent.
 5. `processUSB()`: parse what the computer sent, then run the MPE scheduler.
 
-Debug output goes to the USB serial port at 115200 baud (`USE_DEBUG 1`).
+Debug output goes to the USB serial port (`USE_DEBUG 1`), through the quiet port
+in `debug.h`: text is dropped unless a monitor has the port open. Without that, a
+print with nobody reading could hold the main loop for up to 120 ms (measured as
+"longest loop 128 ms" in the debug status of 24 November 2026).
 
 ## The MIDI bridge
 

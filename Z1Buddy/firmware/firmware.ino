@@ -15,6 +15,9 @@
 
 #include "Z1.h"
 #include "SynthBuddy.h"
+#include "debug.h"
+
+DebugPort Debug;
 // The Multi setup for MPE mode (six timbres on channels 2-7, all on program
 // A127) as one sysex message. Made by tools/pull_multi.sh; do not edit by hand.
 #include "mpe_multi.h"

@@ -5,6 +5,7 @@
 #include "Editable.h"
 #include <i2c_driver.h>
 #include <i2c_driver_wire.h>
+#include "debug.h"
 //#include <Wire.h>
 #define R_START 0x0
 #define DIR_NONE 0x0

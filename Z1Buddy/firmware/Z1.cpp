@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <vector>
 #include "Editable.h"
+#include "debug.h"
 
 
 

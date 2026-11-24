@@ -1,6 +1,7 @@
 #include "Editable.h"
 
 #include "SynthBuddy.h"
+#include "debug.h"
 
 EditableSet editables;
 EditableValue::ChangeFunc EditableValue::defaultFunc;
