@@ -7,6 +7,9 @@
 #                          running and reconnects when the Buddy restarts
 #   tools/buddy go         flash, then monitor
 #   tools/buddy port       show which connected Teensy is the Z1 Buddy
+#   tools/buddy status     ask the running Buddy for its debug status: queues,
+#                          longest waits, counters, and which notes are on
+#   tools/buddy panic      silence: all notes off
 #
 # The Buddy is found by its USB serial number, never by its position: several
 # Teensys are usually connected and their USB locations change.
@@ -104,7 +107,23 @@ say() {
   printf '%s\n' "$1" >> "$LOG"
 }
 
+# The small MIDI tools, built on first use.
+midi_tool() {
+  [ -x "$ROOT/tools/$1" ] || cc -o "$ROOT/tools/$1" "$ROOT/tools/$1.c" -framework CoreMIDI -framework CoreFoundation
+}
+MIDI_PORT="${Z1_PORT:-Z1 Buddy}"
+
 case "$1" in
+  status)
+    midi_tool z1sysex
+    "$ROOT/tools/z1sysex" "$MIDI_PORT" 12 "$OUT/status.syx" f0 7d 5a 31 05 f7 > /dev/null || die "no answer from the Buddy (older firmware?)"
+    python3 "$ROOT/tools/buddy_status.py" "$OUT/status.syx"
+    ;;
+  panic)
+    midi_tool z1send
+    printf '\360\175\132\061\006\367' > "$OUT/panic.syx"
+    "$ROOT/tools/z1send" "$MIDI_PORT" "$OUT/panic.syx" > /dev/null && echo "all notes off sent"
+    ;;
   build) build ;;
   flash) flash ;;
   monitor) monitor ;;
@@ -114,5 +133,5 @@ case "$1" in
     [ -n "$port" ] || die "no Teensy with serial $BUDDY_SERIAL found"
     echo "Z1 Buddy: upload port $port, debug output $SERIAL_DEV"
     ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

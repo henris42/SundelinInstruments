@@ -58,6 +58,19 @@ struct BgParam {
 struct TxEvent {
   uint8_t n;
   uint8_t b[3];
+  uint32_t at;      // when it was put in the queue, for the debug status
+};
+
+// Counters for the debug status (Buddy sysex 05).
+struct DebugStats {
+  uint32_t noteOnIn, noteOffIn;        // from the computer
+  uint32_t noteOnOut, noteOffOut;      // written to the cable for the Z1
+  uint32_t expressionOut;              // bend, controller, pressure messages written
+  uint32_t sysexOut;                   // sysex messages written
+  uint32_t sysexStalls;                // sysex messages closed because their end never came
+  uint16_t maxEvents;                  // most events waiting at once   } since the
+  uint16_t maxEventWaitMs;             // longest an event waited       } last report
+  uint16_t maxLoopMs;                  // longest pass of loop()        }
 };
 
 struct WonkTarget {
@@ -269,6 +282,30 @@ static constexpr int TX_SYSEX_TURN_MS = 20;      // a waiting sysex message goes
 
 // The queues grow as needed (the Teensy has half a megabyte to spare), so
 // nothing is ever dropped or made to wait for want of space.
+// ---- Which notes are on, as the Buddy sees it
+// noteIn: what the computer has sent (note-ons without their note-off yet).
+// noteOut: what has actually been written to the cable for the Z1.
+// When a note hangs, these tell where the note-off went missing: if the note
+// is still in noteIn, it never arrived from the computer; if it is in neither,
+// the Buddy sent it and the Z1 did not take it. Buddy sysex 05 reports them.
+static uint8_t noteIn[16][128];
+static uint8_t noteOut[16][128];
+
+static DebugStats dbgStats;
+
+static inline void noteCount(uint8_t table[16][128], uint8_t status, uint8_t note, uint8_t vel) {
+  uint8_t c = status & 0x0F, type = status & 0xF0;
+  bool in = (table == noteIn);
+  note &= 0x7F;
+  if (type == 0x90 && vel > 0) {
+    if (table[c][note] < 255) table[c][note]++;
+    if (in) dbgStats.noteOnIn++; else dbgStats.noteOnOut++;
+  } else if (type == 0x80 || type == 0x90) {
+    if (table[c][note] > 0) table[c][note]--;
+    if (in) dbgStats.noteOffIn++; else dbgStats.noteOffOut++;
+  }
+}
+
 static std::deque<TxEvent> txEv;
 static std::deque<uint8_t> txSx;
 static bool txInSysEx = false;   // an F0 has gone out and its F7 has not yet
@@ -304,19 +341,23 @@ static void txPump() {
         if (now - txSysExAt < TX_SYSEX_STALL_MS) return;
         Serial1.write((uint8_t)0xF7);
         txInSysEx = false;
+        dbgStats.sysexStalls++;
         continue;
       }
       uint8_t b = txSx.front();
       txSx.pop_front();
       Serial1.write(b);
       txSysExAt = now;
-      if (b == 0xF7) txInSysEx = false;
+      if (b == 0xF7) { txInSysEx = false; dbgStats.sysexOut++; }
       continue;
     }
     if (!txEv.empty()) {                       // 1. events
       TxEvent e = txEv.front();
       txEv.pop_front();
       Serial1.write(e.b, e.n);
+      if (e.n == 3) noteCount(noteOut, e.b[0], e.b[1], e.b[2]);
+      uint32_t waited = now - e.at;
+      if (waited > dbgStats.maxEventWaitMs) dbgStats.maxEventWaitMs = waited > 65535 ? 65535 : (uint16_t)waited;
       continue;
     }
     if (!txSx.empty() && now - txSxTurnAt >= TX_SYSEX_TURN_MS) {
@@ -345,7 +386,9 @@ static void txEvent(const uint8_t* data, size_t n) {
   TxEvent e;
   e.n = (uint8_t)n;
   for (size_t i = 0; i < n; ++i) e.b[i] = data[i];
+  e.at = millis();
   txEv.push_back(e);
+  if (txEv.size() > dbgStats.maxEvents) dbgStats.maxEvents = txEv.size() > 65535 ? 65535 : (uint16_t)txEv.size();
 }
 
 static inline void txEvent3(uint8_t a, uint8_t b, uint8_t c) {
@@ -1456,6 +1499,9 @@ static void potSet(int i, int v) {
 //     03 uu               set unison uu: 0 off, 1 = 2 voices, 2 = 3, 3 = 6
 //     04 ww pt dt         set the three pots, 0-99 each; 7F = leave as it is.
 //                         The value holds until the pot itself is moved.
+//     05                  send the debug status (answer: 12 ..., see buddySendDebug)
+//     06                  panic: note-off for every note the Buddy has on for
+//                         the Z1, then All Notes Off on every channel
 //   from the Buddy:
 //     11 mm uu ww bb pp pt dt   status, sent when asked and whenever it changes
 //        mm  0 Normal, 1 entering MPE (waiting for the Z1), 2 MPE
@@ -1466,6 +1512,8 @@ static void potSet(int i, int v) {
 //            selected in Normal mode: in MPE mode, the sound that was copied
 //            to the working slot A127
 //        pt dt  portamento time and detune, 0-99
+//     12 ...             debug status: queues, longest waits, counters and the
+//                         notes that are on; laid out at buddySendDebug()
 static constexpr int BUDDY_ID_1 = 0x7D;
 static constexpr int BUDDY_ID_2 = 0x5A;
 static constexpr int BUDDY_ID_3 = 0x31;
@@ -1519,6 +1567,89 @@ static void buddyTick(uint32_t now) {
   buddySendStatus();
 }
 
+// The debug status: everything needed to see where a note or a message went.
+// Layout after F0 7D 5A 31 12 (all bytes 0-127; a number of several bytes has
+// its low 7 bits first):
+//   1  format version (1)
+//   7  mode, unison, wonkiness, portamento, detune, bank, program
+//   3  seconds since power-up
+//   2  events waiting   2  sysex bytes waiting   1  background changes waiting
+//   1  1 if a sysex message is on its way out
+//   2  most events waiting at once   2  longest wait of an event, ms
+//   2  longest pass of the main loop, ms        (these three since the last report)
+//   3  note-ons from the computer    3  note-offs from the computer
+//   3  note-ons sent to the Z1       3  note-offs sent to the Z1
+//   3  expression messages sent      3  sysex messages sent
+//   2  sysex messages closed because their end never came
+//   1  ni   1  no   then ni and no pairs <channel 0-15, note>: the notes that
+//      are on as received from the computer, and as sent to the Z1 (24 at most
+//      of each)
+static uint8_t* put7(uint8_t* p, uint32_t v, int bytes) {
+  for (int i = 0; i < bytes; ++i) { *p++ = v & 0x7F; v >>= 7; }
+  return p;
+}
+
+static void buddySendDebug() {
+  uint8_t m[64 + 4 * 24];
+  uint8_t* p = m;
+  *p++ = BUDDY_ID_1; *p++ = BUDDY_ID_2; *p++ = BUDDY_ID_3; *p++ = 0x12;
+  *p++ = 1;
+  *p++ = buddyModeCode();
+  *p++ = (uint8_t)Z1Edit::getInstance()->unisonShown();
+  *p++ = buddyPot(0); *p++ = buddyPot(1); *p++ = buddyPot(2);
+  *p++ = buddyBank; *p++ = buddyProg;
+  p = put7(p, millis() / 1000, 3);
+  p = put7(p, txEv.size(), 2);
+  p = put7(p, txSx.size(), 2);
+  *p++ = (uint8_t)(bgQueue.size() > 127 ? 127 : bgQueue.size());
+  *p++ = txInSysEx ? 1 : 0;
+  p = put7(p, dbgStats.maxEvents, 2);
+  p = put7(p, dbgStats.maxEventWaitMs, 2);
+  p = put7(p, dbgStats.maxLoopMs, 2);
+  p = put7(p, dbgStats.noteOnIn, 3);
+  p = put7(p, dbgStats.noteOffIn, 3);
+  p = put7(p, dbgStats.noteOnOut, 3);
+  p = put7(p, dbgStats.noteOffOut, 3);
+  p = put7(p, dbgStats.expressionOut, 3);
+  p = put7(p, dbgStats.sysexOut, 3);
+  p = put7(p, dbgStats.sysexStalls, 2);
+  uint8_t* counts = p;
+  p += 2;
+  Serial.print("notes on, from the computer:");
+  for (int t = 0; t < 2; ++t) {
+    uint8_t (*table)[128] = t == 0 ? noteIn : noteOut;
+    uint8_t count = 0;
+    for (int c = 0; c < 16; ++c) {
+      for (int k = 0; k < 128; ++k) {
+        if (!table[c][k]) continue;
+        Serial.printf(" ch%d:%d", c + 1, k);
+        if (count < 24) { *p++ = (uint8_t)c; *p++ = (uint8_t)k; count++; }
+      }
+    }
+    counts[t] = count;
+    if (t == 0) Serial.print(" | sent to the Z1:");
+  }
+  Serial.println("");
+  usbMIDI.sendSysEx(p - m, m);
+  dbgStats.maxEvents = 0;
+  dbgStats.maxEventWaitMs = 0;
+  dbgStats.maxLoopMs = 0;
+}
+
+// Silence: a note-off for everything we have on, then All Notes Off.
+static void buddyPanic() {
+  for (int c = 0; c < 16; ++c) {
+    for (int k = 0; k < 128; ++k) {
+      while (noteOut[c][k] > 0) { noteOut[c][k]--; txEvent3((uint8_t)(0x80 | c), (uint8_t)k, 0); }
+      noteIn[c][k] = 0;
+    }
+  }
+  // (the note-offs above are counted again when they are written; that is
+  // harmless, the count does not go below zero)
+  for (int c = 0; c < 16; ++c) txEvent3((uint8_t)(0xB0 | c), 123, 0);
+  Serial.println("panic: all notes off");
+}
+
 // A complete sysex message from the computer; true if it was for the Buddy.
 static bool buddyHandle(const uint8_t* data, uint16_t length) {
   if (length < 6 || data[0] != 0xF0 || data[1] != BUDDY_ID_1 || data[2] != BUDDY_ID_2 || data[3] != BUDDY_ID_3) return false;
@@ -1530,6 +1661,8 @@ static bool buddyHandle(const uint8_t* data, uint16_t length) {
     case 0x04:
       for (int i = 0; i < 3 && 6 + i < length; ++i) potSet(i, data[5 + i]);
       break;
+    case 0x05: buddySendDebug(); break;
+    case 0x06: buddyPanic(); break;
   }
   return true;
 }
@@ -1622,6 +1755,7 @@ static inline void uartTxWrite(const uint8_t* data, size_t n) {
 }
 static inline void txDirect(const uint8_t* data, size_t n) {
   Serial1.write(data, n);
+  dbgStats.expressionOut++;
 }
 
 // Tiny helpers to send single MIDI messages (raw bytes) via uartTxWrite()
@@ -1807,6 +1941,8 @@ void processUSB() {
     uint8_t ch = usbMIDI.getChannel();  // 1..16
     uint8_t d1 = usbMIDI.getData1();
     uint8_t d2 = usbMIDI.getData2();
+    if (type == usbMIDI.NoteOn) noteCount(noteIn, (uint8_t)(0x90 | ((ch - 1) & 0x0F)), d1, d2);
+    else if (type == usbMIDI.NoteOff) noteCount(noteIn, (uint8_t)(0x80 | ((ch - 1) & 0x0F)), d1, 0);
     if (z->getMainState() == mainState::NORMAL) {
       ch = 1;
       switch (type) {
@@ -2087,6 +2223,10 @@ int prevtime;
 int foo;
 
 void loop() {
+  static uint32_t loopStartedAt = 0;
+  uint32_t loopNow = millis();
+  if (loopStartedAt && loopNow - loopStartedAt > dbgStats.maxLoopMs) dbgStats.maxLoopMs = (loopNow - loopStartedAt) > 65535 ? 65535 : (uint16_t)(loopNow - loopStartedAt);
+  loopStartedAt = loopNow;
 
   auto s = SynthBuddy::getInstance();
   auto z = Z1Edit::getInstance();

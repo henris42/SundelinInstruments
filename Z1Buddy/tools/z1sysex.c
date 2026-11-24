@@ -2,8 +2,9 @@
 //
 //   z1sysex <port name> <function hex> <out file> <request bytes in hex...>
 //
-// Waits up to 3 seconds for a Korg Z1 message (F0 42 3g 46 ...) whose function
-// byte is <function hex> and writes it, F0 to F7, to <out file>.
+// Waits up to 3 seconds for a Korg Z1 message (F0 42 3g 46 ...) or a Buddy
+// message (F0 7D 5A 31 ...) whose function byte is <function hex> and writes
+// it, F0 to F7, to <out file>.
 // macOS only (CoreMIDI). Build:
 //   cc -o z1sysex z1sysex.c -framework CoreMIDI -framework CoreFoundation
 #include <CoreMIDI/CoreMIDI.h>
@@ -37,7 +38,9 @@ static void on_midi(const MIDIPacketList *pl, void *a, void *b) {
       if (len < (int)sizeof msg) msg[len++] = c;
       if (c != 0xf7) continue;
       in_sysex = 0;
-      if (len > 5 && msg[1] == 0x42 && msg[3] == 0x46 && msg[4] == want) {
+      // a Korg Z1 message (42 3g 46), or one of the Buddy's own (7D 5A 31)
+      int korg = msg[1] == 0x42 && msg[3] == 0x46, buddy = msg[1] == 0x7d && msg[2] == 0x5a && msg[3] == 0x31;
+      if (len > 5 && (korg || buddy) && msg[4] == want) {
         done = 1;
       } else if (len <= (int)sizeof other) {      // remember a short answer, e.g. an error
         memcpy(other, msg, len);

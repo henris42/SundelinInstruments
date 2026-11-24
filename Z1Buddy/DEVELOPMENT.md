@@ -49,6 +49,8 @@ tools/buddy flash      # compile, then upload to the Z1 Buddy
 tools/buddy monitor    # show the debug output with times, reconnecting after a restart
 tools/buddy go         # flash, then monitor
 tools/buddy port       # show which connected Teensy is the Z1 Buddy
+tools/buddy status     # ask the running Buddy for its debug status
+tools/buddy panic      # all notes off
 ```
 
 - **The Buddy is found by its USB serial number** (13124960), never by its USB
@@ -236,7 +238,10 @@ F0 7D 5A 31 <command> <data...> F7
 | To the Buddy | `02 mm` | Go to main mode `mm`: 0 Normal, 1 MPE |
 | To the Buddy | `03 uu` | Set unison `uu`: 0 off, 1 = 2 voices, 2 = 3, 3 = 6 (the program's unison in Normal mode, the stacking in MPE mode) |
 | To the Buddy | `04 ww pt dt` | Set the three pots: wonkiness, portamento time, detune, 0–99 each; `7F` leaves one as it is |
+| To the Buddy | `05` | Send the debug status |
+| To the Buddy | `06` | Panic: note-off for every note the Buddy has on for the Z1, then All Notes Off on all channels |
 | From the Buddy | `11 mm uu ww bb pp pt dt` | Status |
+| From the Buddy | `12 …` | Debug status, see below |
 
 The status bytes:
 
@@ -261,6 +266,34 @@ The status bytes:
   a bank select has passed, the bank is reported as not known.
 - Entering MPE from the computer runs the same steps as the button, so the status
   goes 0 → 1 → 2 as the Z1 answers.
+
+### Debug status
+
+For finding where a note or a message went. `tools/buddy status` asks for it and
+prints it in words; `tools/buddy panic` sends the panic message.
+
+```
+mode Normal, unison off, wonkiness 16, portamento 0, detune 0, last patch A 12, up 12 min 34 s
+waiting now:     0 events, 0 sysex bytes, 2 background changes
+since last report: most events waiting 7, longest wait 4 ms, longest loop 12 ms
+notes from the computer: 1523 on, 1522 off      sent to the Z1: 1523 on, 1522 off
+expression messages sent: 48211      sysex messages sent: 9120 (0 closed unfinished)
+on, as received from the computer: D4 (62) on channel 3
+on, as sent to the Z1:             none
+```
+
+The two lists at the end are what settles a hanging note:
+
+| The hanging note is… | The note-off was lost… |
+| --- | --- |
+| still in the first list | before the Buddy: the computer never sent it (Live, a device in the chain, the controller) |
+| in the second list only | in the Buddy |
+| in neither list | after the Buddy: it was written to the cable and the Z1 did not take it |
+
+The second list is counted at the moment a note message is written to the port,
+not when it is queued. "Longest wait" is the longest any note or other event sat
+in the output queue, and with "longest loop" it is reset by each report. The byte
+layout is at `buddySendDebug()` in `firmware.ino`.
 
 Code: the block marked `Buddy sysex` in `firmware.ino`; `Z1Edit::gotoMainMode()`,
 `enterMPE()`, `leaveMPE()` and `setUnisonLevel()`.

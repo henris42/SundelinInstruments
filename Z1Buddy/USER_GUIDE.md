@@ -233,3 +233,6 @@ What to know:
   and its arpeggio pattern, and the Buddy passes them on without updating its own
   displays.
 - Only Korg Z1 system exclusive messages are passed from the computer to the Z1.
+- **If a note hangs:** `tools/buddy panic` on the computer silences everything.
+  Before that, `tools/buddy status` shows which notes the Buddy thinks are on,
+  which tells where the note-off was lost.
